@@ -1,0 +1,16 @@
+wandb
+
+__pycache__
+
+logs
+
+*.pyc
+
+test.py
+nohup.out
+
+.cache
+
+EleutherAI
+facebook
+gpt2
