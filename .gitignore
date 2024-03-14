@@ -14,5 +14,7 @@ nohup.out
 EleutherAI
 facebook
 gpt2
+bert-base-uncased
 
 datasets
+tests
