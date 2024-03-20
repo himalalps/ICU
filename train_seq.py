@@ -13,7 +13,7 @@ import torch
 # import torch.nn as nn
 # import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from transformers import GPT2Tokenizer, AutoModelForCausalLM
 
 logging.basicConfig(
@@ -33,14 +33,13 @@ gpt2_name_or_path = "gpt2"
 prefix_path = "./datasets/target/train_prefix.npy"
 suffix_path = "./datasets/target/train_suffix.npy"
 target_length = 200
-epochs = 30
-batch_size = 4
+epochs = 10
+batch_size = 8
 num_workers = 8
 
-truncate_len = 128
+truncate_len = 1000
 self_predict = True
 chunk_len = 32
-lambda_val = 0.5
 
 
 def get_train_loader(prefix_path, suffix_path, gpt2tokenizer, tokenizer):
@@ -48,7 +47,8 @@ def get_train_loader(prefix_path, suffix_path, gpt2tokenizer, tokenizer):
         prefix_path, suffix_path, gpt2tokenizer, tokenizer, truncate_len, self_predict
     )
 
-    sampler = RandomSampler(train_dataset)
+    # sampler = RandomSampler(train_dataset)
+    sampler = SequentialSampler(train_dataset)
     dataloader = DataLoader(
         train_dataset, sampler=sampler, batch_size=batch_size, num_workers=num_workers
     )
@@ -147,55 +147,59 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:9" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))
 
-# scheduler = StepLR(optimizer, step_size=3, gamma=0.5)
+scheduler = StepLR(optimizer, step_size=5, gamma=0.5)
 
 train_loader = get_train_loader(prefix_path, suffix_path, gpt2tokenizer, tokenizer)
 
 val_score(0)
 
-for epoch in range(epochs):
-    model.train()
-    epoch_loss = 0
+for i in range(truncate_len // chunk_len):
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0
 
-    logger.info("Epoch {}: training".format(epoch))
+        logger.info("Epoch {}: training".format(epoch))
 
-    for batch_idx, batch in enumerate(train_loader):
-        optimizer.zero_grad()
-        input_ids = batch["prefix_ids"].to(device)
-        attention_mask = batch["prefix_mask"].to(device)
-        target_ids = batch["suffix_ids"]
-        target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
-        target_ids = target_ids.to(device)
+        for batch_idx, batch in enumerate(train_loader):
+            if batch_idx not in range(
+                i * chunk_len // batch_size, (i + 1) * chunk_len // batch_size
+            ):
+                continue
+            input_ids = batch["prefix_ids"].to(device)
+            attention_mask = batch["prefix_mask"].to(device)
+            target_ids = batch["suffix_ids"]
+            target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
+            target_ids = target_ids.to(device)
 
-        outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
-        current_loss = outputs[0]
-        del outputs
-        loss = -lambda_val * current_loss
-        epoch_loss += current_loss
+            optimizer.zero_grad()
 
-        loss.backward()
-        optimizer.step()
+            outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
+            loss = -outputs[0]
+            epoch_loss += outputs[0]
 
-        if batch_idx % 25 == 0:
-            logger.info(
-                "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
-                    epoch,
-                    batch_idx,
-                    len(train_loader),
-                    100.0 * batch_idx / len(train_loader),
-                    current_loss.item(),
+            loss.backward()
+            optimizer.step()
+
+            if batch_idx % chunk_len == 0:
+                logger.info(
+                    "Train Chunk: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
+                        epoch,
+                        batch_idx,
+                        len(train_loader),
+                        100.0 * batch_idx / len(train_loader),
+                        outputs[0].item(),
+                    )
                 )
-            )
 
-    logger.info(
-        "Epoch {} finished, mean loss: {:.6f}".format(
-            epoch, epoch_loss.item() / len(train_loader)
+        logger.info(
+            "Epoch {} finished, mean loss: {:.6f}".format(
+                epoch, epoch_loss.item() / chunk_len * batch_size
+            )
         )
-    )
-    val_score(epoch + 1)
-    # scheduler.step()
+    val_score(i + 1)
+    scheduler.step()

@@ -1,5 +1,5 @@
 from utils import batch_compute_bert_score
-from Datasets import Custom_Dataset
+from Datasets_neo import Custom_Dataset
 
 import pandas as pd
 
@@ -30,22 +30,20 @@ tokenizer_name_or_path = "EleutherAI/gpt-neo-1.3B"
 model_name_or_path = "EleutherAI/gpt-neo-1.3B"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
-prefix_path = "./datasets/target/train_prefix.npy"
-suffix_path = "./datasets/target/train_suffix.npy"
+data_path = "./datasets/lm_extraction_128_0.csv"
 target_length = 200
-epochs = 30
-batch_size = 4
+epochs = 20
+batch_size = 8
 num_workers = 8
 
-truncate_len = 128
 self_predict = True
 chunk_len = 32
 lambda_val = 0.5
 
 
-def get_train_loader(prefix_path, suffix_path, gpt2tokenizer, tokenizer):
+def get_train_loader(data_path, gpt2tokenizer, tokenizer):
     train_dataset = Custom_Dataset(
-        prefix_path, suffix_path, gpt2tokenizer, tokenizer, truncate_len, self_predict
+        data_path, gpt2tokenizer, tokenizer
     )
 
     sampler = RandomSampler(train_dataset)
@@ -147,14 +145,14 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:9" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))
 
 # scheduler = StepLR(optimizer, step_size=3, gamma=0.5)
 
-train_loader = get_train_loader(prefix_path, suffix_path, gpt2tokenizer, tokenizer)
+train_loader = get_train_loader(data_path, gpt2tokenizer, tokenizer)
 
 val_score(0)
 
@@ -173,10 +171,8 @@ for epoch in range(epochs):
         target_ids = target_ids.to(device)
 
         outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
-        current_loss = outputs[0]
-        del outputs
-        loss = -lambda_val * current_loss
-        epoch_loss += current_loss
+        loss = -lambda_val * outputs[0]
+        epoch_loss += outputs[0]
 
         loss.backward()
         optimizer.step()
@@ -188,7 +184,7 @@ for epoch in range(epochs):
                     batch_idx,
                     len(train_loader),
                     100.0 * batch_idx / len(train_loader),
-                    current_loss.item(),
+                    outputs[0].item(),
                 )
             )
 
