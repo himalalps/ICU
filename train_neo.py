@@ -1,11 +1,13 @@
 from utils import batch_compute_bert_score
 from Datasets_neo import Custom_Dataset
 
+
+import os
+import logging
+import random
+import numpy as np
 import pandas as pd
 
-import logging
-
-# import numpy as np
 # import matplotlib.pyplot as plt
 
 import torch
@@ -14,7 +16,8 @@ import torch
 # import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, RandomSampler
-from transformers import GPT2Tokenizer, AutoModelForCausalLM
+from transformers import GPT2Tokenizer, AutoModelForCausalLM, GPTNeoForCausalLM
+from torchmetrics.functional import accuracy
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -26,31 +29,61 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 
-tokenizer_name_or_path = "EleutherAI/gpt-neo-1.3B"
-model_name_or_path = "EleutherAI/gpt-neo-1.3B"
+tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
+model_name_or_path = "EleutherAI/gpt-neo-125m"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
-data_path = "./datasets/lm_extraction_128_0.csv"
+data_path = "./datasets/test/_dataset.npy"
+prefix_length = 200
+suffix_length = 200
 target_length = 200
-epochs = 20
+epochs = 30
 batch_size = 8
 num_workers = 8
 
+truncate_len = 128
 self_predict = True
-chunk_len = 32
 lambda_val = 0.5
 
+el_n = [10]
 
-def get_train_loader(data_path, gpt2tokenizer, tokenizer):
-    train_dataset = Custom_Dataset(
-        data_path, gpt2tokenizer, tokenizer
+valid_result = []
+
+
+def seed_everything(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+seed = 42
+seed_everything(seed)
+
+
+def get_loader(data_path, gpt2tokenizer, tokenizer):
+    dataset = Custom_Dataset(
+        data_path,
+        gpt2tokenizer,
+        tokenizer,
+        prefix_length,
+        suffix_length,
     )
 
-    sampler = RandomSampler(train_dataset)
-    dataloader = DataLoader(
-        train_dataset, sampler=sampler, batch_size=batch_size, num_workers=num_workers
+    sampler = RandomSampler(dataset)
+    train_dataloader = DataLoader(
+        dataset, sampler=sampler, batch_size=batch_size, num_workers=num_workers
     )
-    return dataloader
+    valid_dataloader = DataLoader(
+        dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
+    )
+    return train_dataloader, valid_dataloader
 
 
 def predict(message):
@@ -66,15 +99,44 @@ def predict(message):
     return model_output_text
 
 
+def val(epoch):
+    logger.info("Validating epoch {}".format(epoch))
+    with torch.no_grad():
+        val_score(epoch)
+        val_loss = validation_forget(epoch)
+        acc = validation_ma(epoch)
+        els = validation_el(epoch)
+        valid_dict = {
+            "epoch": epoch,
+            "val_loss": val_loss,
+            "acc": acc,
+        }
+        for n, el in zip(el_n, els):
+            valid_dict[f"el_{n}"] = el
+        valid_result.append(valid_dict)
+    if acc < 0.2994 and any([el < 0.0499 for el in els]):
+        logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
+        return True
+    else:
+        torch.cuda.empty_cache()
+        return False
+
+
 def val_score(epoch):
-    logger.info("Epoch {}: validating".format(epoch))
     data = []
     model.eval()
     for batch_idx, batch in enumerate(train_loader):
         reference_list = gpt2tokenizer.batch_decode(batch["gpt2_suffix"])
 
-        input_ids = batch["prefix_ids"].to(device)
-
+        message = gpt2tokenizer.batch_decode(batch["gpt2_prefix"])
+        source = tokenizer(
+            message,
+            max_length=50,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        input_ids = source["input_ids"].to(device)
         candidate_list = model.generate(
             input_ids,
             max_new_tokens=50,
@@ -116,6 +178,106 @@ def val_score(epoch):
     logger.debug(predict("This is a test for the model."))
 
 
+def validation_forget(epoch):
+    model.eval()
+    epoch_loss = 0
+    for batch_idx, batch in enumerate(val_loader):
+        input_ids = batch["prefix_ids"].to(device)
+        attention_mask = batch["prefix_mask"].to(device)
+        target_ids = batch["suffix_ids"]
+        target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
+        target_ids = target_ids.to(device)
+
+        outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
+        epoch_loss += outputs[0].item()
+
+    logger.info("val_loss [epoch {}] {}".format(epoch, epoch_loss / len(val_loader)))
+    return epoch_loss / len(val_loader)
+
+
+def validation_ma(epoch):
+    model.eval()
+    epoch_acc = 0
+
+    for batch_idx, batch in enumerate(val_loader):
+        input_ids = batch["prefix_ids"].to(device)
+
+        labels, preds = [], []
+        for i in range(1, target_length):
+            label = input_ids[..., i]
+            prompt = input_ids[..., :i]
+
+            try:
+                pred = model.generate(
+                    prompt, max_length=i + 1, pad_token_id=tokenizer.eos_token_id
+                )[:, -1]
+            except:
+                pred = model.generate(
+                    torch.squeeze(prompt),
+                    max_length=i + 1,
+                    pad_token_id=tokenizer.eos_token_id,
+                ).squeeze()[-1]
+            labels.append(torch.squeeze(label))
+            preds.append(torch.squeeze(pred))
+
+        preds = torch.stack(preds)
+        labels = torch.stack(labels)
+
+        score = accuracy(preds, labels, ignore_index=-100)
+        epoch_acc += score.item()
+
+    logger.info("acc [epoch {}] {}".format(epoch, epoch_acc / len(val_loader)))
+    return epoch_acc / len(val_loader)
+
+
+def validation_el(epoch):
+    def ngram_of_1D_tensor(X, n):
+        grams = [tuple(X[i : i + n].tolist()) for i in range(X.shape[0] - n + 1)]
+        return grams
+
+    model.eval()
+    el_score = {n: [] for n in el_n}
+
+    for batch_idx, batch in enumerate(val_loader):
+        input_ids = batch["prefix_ids"].to(device)
+
+        cur_batch_size = input_ids.shape[0]
+        numerator = {n: [0] * cur_batch_size for n in el_n}
+        for i in reversed(range(150, target_length)):
+            label = input_ids[..., i:target_length]
+            prompt = input_ids[..., :i]
+            pred = model.generate(
+                prompt, max_length=target_length, pad_token_id=tokenizer.eos_token_id
+            )[..., i:]
+
+            for example_idx in range(cur_batch_size):
+                p, l = pred[example_idx], label[example_idx]
+                for n in el_n:
+                    p_ngram = ngram_of_1D_tensor(p, n)
+                    l_ngram = ngram_of_1D_tensor(l, n)
+                    l_unique = set(l_ngram)
+                    p_tp = [i for i in p_ngram if i in l_unique]
+
+                    try:
+                        p_acc = len(p_tp) / len(l_ngram)
+                        numerator[n][example_idx] += p_acc
+                    except ZeroDivisionError:
+                        pass
+
+        for n in el_n:
+            el_score[n] += [s / (target_length - 150 - (n - 1)) for s in numerator[n]]
+
+    els = []
+    for n in el_n:
+        logger.info(
+            "el_{}-gram [epoch {}] {}".format(
+                n, epoch, sum(el_score[n]) / len(el_score[n])
+            )
+        )
+        els.append(sum(el_score[n]) / len(el_score[n]))
+    return els
+
+
 gpt2tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained(gpt2_name_or_path)
 gpt2tokenizer.padding_side = "left"
 tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_name_or_path)
@@ -124,7 +286,7 @@ if "gpt" in tokenizer_name_or_path:
     tokenizer.pad_token = tokenizer.eos_token
 # Different models have different kwargs
 if "gpt-neo" in model_name_or_path:
-    model = AutoModelForCausalLM.from_pretrained(
+    model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         resid_dropout=0,
         embed_dropout=0,
@@ -132,11 +294,11 @@ if "gpt-neo" in model_name_or_path:
         pad_token_id=tokenizer.eos_token_id,
     )
 elif "opt" in model_name_or_path:
-    model = AutoModelForCausalLM.from_pretrained(
+    model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
         model_name_or_path, dropout=0, attention_dropout=0, activation_dropout=0
     )
 else:  # GPT2
-    model = AutoModelForCausalLM.from_pretrained(
+    model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         resid_pdrop=0,
         embd_pdrop=0,
@@ -145,22 +307,23 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:6" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))
 
 # scheduler = StepLR(optimizer, step_size=3, gamma=0.5)
 
-train_loader = get_train_loader(data_path, gpt2tokenizer, tokenizer)
+train_loader, val_loader = get_loader(data_path, gpt2tokenizer, tokenizer)
 
-val_score(0)
-
-for epoch in range(epochs):
+val(0)
+epoch = 0
+while True:
+    torch.cuda.empty_cache()
     model.train()
     epoch_loss = 0
 
-    logger.info("Epoch {}: training".format(epoch))
+    logger.info("Epoch {}: training".format(epoch + 1))
 
     for batch_idx, batch in enumerate(train_loader):
         optimizer.zero_grad()
@@ -171,27 +334,33 @@ for epoch in range(epochs):
         target_ids = target_ids.to(device)
 
         outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
-        loss = -lambda_val * outputs[0]
-        epoch_loss += outputs[0]
+        current_loss = outputs[0]
+
+        loss = -lambda_val * current_loss
+        epoch_loss += current_loss
 
         loss.backward()
         optimizer.step()
 
-        if batch_idx % 25 == 0:
-            logger.info(
-                "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
-                    epoch,
-                    batch_idx,
-                    len(train_loader),
-                    100.0 * batch_idx / len(train_loader),
-                    outputs[0].item(),
-                )
+        logger.info(
+            "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
+                epoch,
+                batch_idx,
+                len(train_loader),
+                100.0 * batch_idx / len(train_loader),
+                current_loss.item(),
             )
+        )
 
     logger.info(
         "Epoch {} finished, mean loss: {:.6f}".format(
-            epoch, epoch_loss.item() / len(train_loader)
+            epoch + 1, epoch_loss.item() / len(train_loader)
         )
     )
-    val_score(epoch + 1)
+    if val(epoch + 1):
+        break
     # scheduler.step()
+    epoch += 1
+
+valid_df = pd.DataFrame(valid_result)
+valid_df.to_csv("./result/valid.csv", index=False)

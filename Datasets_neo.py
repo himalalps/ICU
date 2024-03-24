@@ -24,29 +24,24 @@ class Custom_Dataset(Dataset):
         self._getdata()
 
     def _getdata(self):
-        data_df = pd.read_csv(self.data_path)
+        ds = np.load(self.data_path)
+        df = pd.DataFrame(data=ds)
 
-        self.df = data_df.drop(columns=["corpus"])
-        self.ids = np.array(self.df["doc_id"]).astype(np.int64)
-        suffix = self.df["text"].apply(self._convert)
-        self.gpt2_suffix = np.array(suffix).astype(np.int64)
+        self.gpt2_prefix = np.array(df.iloc[:, 100:150]).astype(np.int64)
+        self.gpt2_suffix = np.array(df.iloc[:, 150:200]).astype(np.int64)
 
-        df = self.df["text"].apply(self._convert_id, args=(self.prefix_length,))
-        self.prefix_ids = np.array(df["input_ids"])
-        self.prefix_mask = np.array(df["attention_mask"])
-        self.suffix_ids = np.array(df["input_ids"])
+        prefix_df = df.apply(self._convert, axis=1, args=(self.prefix_length, True))
+        self.prefix_ids = np.array(prefix_df["input_ids"])
+        self.prefix_mask = np.array(prefix_df["attention_mask"])
+        suffix_df = df.apply(self._convert, axis=1, args=(self.suffix_length, False))
+        self.suffix_ids = np.array(suffix_df["input_ids"])
 
-    def _convert(self, row):
-        message = self.gpt2tokenizer.encode(row)
-        message = message[-50:]
-        return pd.Series(message)
-
-    def _convert_id(self, row, length):
-        message = self.gpt2tokenizer.encode(row)
-        message = message[-100:]
+    def _convert(self, row, length, flag):
+        message = self.gpt2tokenizer.decode(row)
         source = self.tokenizer(
-            row,
+            message,
             max_length=length,
+            add_special_tokens=flag,
             padding="max_length",
             truncation=True,
             return_tensors="pt",
@@ -58,7 +53,8 @@ class Custom_Dataset(Dataset):
 
     def __getitem__(self, idx):
         return {
-            "id": self.ids[idx],
+            "id": idx,
+            "gpt2_prefix": self.gpt2_prefix[idx],
             "gpt2_suffix": self.gpt2_suffix[idx],
             "prefix_ids": self.prefix_ids[idx].squeeze(),
             "prefix_mask": self.prefix_mask[idx].squeeze(),
@@ -70,13 +66,12 @@ class Custom_Dataset(Dataset):
 if __name__ == "__main__":
     from transformers import GPT2Tokenizer
 
-    # tokenizer_name_or_path = "EleutherAI/gpt-neo-1.3B"
-    # gpt2_name_or_path = "gpt2"
-    # prefix_path = "./datasets/target/train_prefix.npy"
-    # suffix_path = "./datasets/target/train_suffix.npy"
-    # gpt2tokenizer = GPT2Tokenizer.from_pretrained(gpt2_name_or_path)
-    # tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_name_or_path)
-    # tokenizer.pad_token = tokenizer.eos_token
-    # dataset = Custom_Dataset(prefix_path, suffix_path, gpt2tokenizer, tokenizer)
-    # print(len(dataset))
-    # print(dataset[10])
+    tokenizer_name_or_path = "EleutherAI/gpt-neo-1.3B"
+    gpt2_name_or_path = "gpt2"
+    data_path = "./datasets/target/train_dataset.npy"
+    gpt2tokenizer = GPT2Tokenizer.from_pretrained(gpt2_name_or_path)
+    tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_name_or_path)
+    tokenizer.pad_token = tokenizer.eos_token
+    dataset = Custom_Dataset(data_path, gpt2tokenizer, tokenizer)
+    print(len(dataset))
+    print(dataset[10])

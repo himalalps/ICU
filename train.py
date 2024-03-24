@@ -34,7 +34,7 @@ prefix_path = "./datasets/target/train_prefix.npy"
 suffix_path = "./datasets/target/train_suffix.npy"
 target_length = 200
 epochs = 30
-batch_size = 4
+batch_size = 8
 num_workers = 8
 
 truncate_len = 128
