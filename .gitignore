@@ -15,7 +15,8 @@ EleutherAI
 facebook
 gpt2
 bert-base-uncased
+all-MiniLM-L6-v2
 
-datasets
+
 tests
 result

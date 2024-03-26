@@ -33,7 +33,8 @@ tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
 model_name_or_path = "EleutherAI/gpt-neo-125m"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
-data_path = "./datasets/test/_dataset.npy"
+unlearn_data_path = "./datasets/test/_dataset.npy"
+learn_data_path = "./datasets/learn/_dataset.npy"
 prefix_length = 200
 suffix_length = 200
 target_length = 200
@@ -48,6 +49,8 @@ lambda_val = 0.5
 el_n = [10]
 
 valid_result = []
+
+num_epoch = 30
 
 
 def seed_everything(seed=42):
@@ -125,7 +128,7 @@ def val(epoch):
 def val_score(epoch):
     data = []
     model.eval()
-    for batch_idx, batch in enumerate(train_loader):
+    for batch_idx, batch in enumerate(val_loader):
         reference_list = gpt2tokenizer.batch_decode(batch["gpt2_suffix"])
 
         message = gpt2tokenizer.batch_decode(batch["gpt2_prefix"])
@@ -169,7 +172,7 @@ def val_score(epoch):
                     )
                 )
         if batch_idx % 50 == 0:
-            logger.debug(" validating.. {}/{}".format(batch_idx, len(train_loader)))
+            logger.debug(" validating.. {}/{}".format(batch_idx, len(val_loader)))
 
     df = pd.DataFrame(data)
     df.sort_values(by="id", ascending=True, inplace=True)
@@ -307,25 +310,26 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:6" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:7" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))
 
 # scheduler = StepLR(optimizer, step_size=3, gamma=0.5)
 
-train_loader, val_loader = get_loader(data_path, gpt2tokenizer, tokenizer)
+unlearn_loader, val_loader = get_loader(unlearn_data_path, gpt2tokenizer, tokenizer)
+learn_loader, _ = get_loader(learn_data_path, gpt2tokenizer, tokenizer)
+
 
 val(0)
-epoch = 0
-while True:
+for epoch in range(num_epoch):
     torch.cuda.empty_cache()
     model.train()
     epoch_loss = 0
 
     logger.info("Epoch {}: training".format(epoch + 1))
 
-    for batch_idx, batch in enumerate(train_loader):
+    for batch_idx, batch in enumerate(unlearn_loader):
         optimizer.zero_grad()
         input_ids = batch["prefix_ids"].to(device)
         attention_mask = batch["prefix_mask"].to(device)
@@ -346,21 +350,48 @@ while True:
             "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
                 epoch + 1,
                 batch_idx,
-                len(train_loader),
-                100.0 * batch_idx / len(train_loader),
+                len(unlearn_loader) + len(learn_loader),
+                100.0 * batch_idx / (len(unlearn_loader) + len(learn_loader)),
+                current_loss.item(),
+            )
+        )
+
+    for batch_idx, batch in enumerate(learn_loader):
+        optimizer.zero_grad()
+        input_ids = batch["prefix_ids"].to(device)
+        attention_mask = batch["prefix_mask"].to(device)
+        target_ids = batch["suffix_ids"]
+        target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
+        target_ids = target_ids.to(device)
+
+        outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
+        current_loss = outputs[0]
+
+        loss = lambda_val * current_loss
+        epoch_loss += current_loss
+
+        loss.backward()
+        optimizer.step()
+
+        
+        logger.info(
+            "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
+                epoch + 1,
+                batch_idx + len(unlearn_loader),
+                len(unlearn_loader) + len(learn_loader),
+                100.0 * batch_idx / (len(learn_loader) + len(unlearn_loader)),
                 current_loss.item(),
             )
         )
 
     logger.info(
         "Epoch {} finished, mean loss: {:.6f}".format(
-            epoch + 1, epoch_loss.item() / len(train_loader)
+            epoch + 1, epoch_loss.item() / (len(learn_loader) + len(unlearn_loader))
         )
     )
     if val(epoch + 1):
         break
     # scheduler.step()
-    epoch += 1
 
 valid_df = pd.DataFrame(valid_result)
 valid_df.to_csv("./result/valid.csv", index=False)
