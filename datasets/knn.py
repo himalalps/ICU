@@ -30,6 +30,7 @@ data_sentence, data_embeddings = get_embeddings("./datasets/learn/_dataset.npy")
 n = data_embeddings.shape[0]
 
 index = faiss.IndexFlatL2(d)
+# index = faiss.IndexFlatIP(d)
 
 index.add(data_embeddings)
 

@@ -284,9 +284,9 @@ def validation_el(epoch):
 gpt2tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained(gpt2_name_or_path)
 gpt2tokenizer.padding_side = "left"
 tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_name_or_path)
-tokenizer.padding_side = "left"
 if "gpt" in tokenizer_name_or_path:
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
 # Different models have different kwargs
 if "gpt-neo" in model_name_or_path:
     model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
