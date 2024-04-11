@@ -16,7 +16,7 @@ import torch
 # import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, RandomSampler
-from transformers import GPT2Tokenizer, AutoModelForCausalLM, GPTNeoForCausalLM
+from transformers import GPT2Tokenizer, AutoModelForCausalLM, GPTNeoForCausalLM, OPTForCausalLM, GPT2LMHeadModel
 from torchmetrics.functional import accuracy
 
 logging.basicConfig(
@@ -294,11 +294,11 @@ if "gpt-neo" in model_name_or_path:
         pad_token_id=tokenizer.eos_token_id,
     )
 elif "opt" in model_name_or_path:
-    model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
+    model: OPTForCausalLM = AutoModelForCausalLM.from_pretrained(
         model_name_or_path, dropout=0, attention_dropout=0, activation_dropout=0
     )
 else:  # GPT2
-    model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
+    model: GPT2LMHeadModel = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         resid_pdrop=0,
         embd_pdrop=0,

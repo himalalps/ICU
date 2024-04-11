@@ -13,7 +13,13 @@ from collections import Counter
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from transformers import GPT2Tokenizer, AutoModelForCausalLM, GPTNeoForCausalLM
+from transformers import (
+    GPT2Tokenizer,
+    AutoModelForCausalLM,
+    GPTNeoForCausalLM,
+    OPTForCausalLM,
+    GPT2LMHeadModel,
+)
 
 
 from utils import (
@@ -26,15 +32,15 @@ from utils import (
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/valid_neo125m.log",
+    filename="result/valid.log",
     filemode="w",
 )
 
 logger = logging.getLogger()
 
 
-tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
-model_name_or_path = "EleutherAI/gpt-neo-125m"
+tokenizer_name_or_path = "EleutherAI/gpt-neo-2.7B"
+model_name_or_path = "savemodel/savegpt-neo-2_7"
 prefix_length = 512
 suffix_length = 512
 cache_dir = "./.cache/"
@@ -93,11 +99,11 @@ if "gpt-neo" in model_name_or_path:
         pad_token_id=tokenizer.eos_token_id,
     )
 elif "opt" in model_name_or_path:
-    model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
+    model: OPTForCausalLM = AutoModelForCausalLM.from_pretrained(
         model_name_or_path, dropout=0, attention_dropout=0, activation_dropout=0
     )
 else:  # GPT2
-    model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
+    model: GPT2LMHeadModel = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         resid_pdrop=0,
         embd_pdrop=0,
@@ -106,7 +112,7 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 try:

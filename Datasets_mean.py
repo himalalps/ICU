@@ -8,7 +8,8 @@ from transformers import GPT2Tokenizer
 class Custom_Dataset(Dataset):
     def __init__(
         self,
-        data_path,
+        unlearn_data_path,
+        learn_data_path,
         gpt2tokenizer,
         tokenizer,
         prefix_length=50,
@@ -16,7 +17,8 @@ class Custom_Dataset(Dataset):
         **kwargs,
     ):
         super(Custom_Dataset, self).__init__(**kwargs)
-        self.data_path: str = data_path
+        self.unlearn_data_path: str = unlearn_data_path
+        self.learn_data_path: str = learn_data_path
         self.gpt2tokenizer: GPT2Tokenizer = gpt2tokenizer
         self.tokenizer: GPT2Tokenizer = tokenizer
         self.prefix_length = prefix_length
@@ -24,17 +26,46 @@ class Custom_Dataset(Dataset):
         self._getdata()
 
     def _getdata(self):
-        ds = np.load(self.data_path)
-        df = pd.DataFrame(data=ds)
+        unlearn_ds = np.load(self.unlearn_data_path)
+        unlearn_df = pd.DataFrame(data=unlearn_ds)
 
-        self.gpt2_prefix = np.array(df.iloc[:, 100:150]).astype(np.int64)
-        self.gpt2_suffix = np.array(df.iloc[:, 150:200]).astype(np.int64)
+        learn_ds = np.load(self.learn_data_path)
+        learn_df = pd.DataFrame(data=learn_ds)
 
-        prefix_df = df.apply(self._convert, axis=1, args=(self.prefix_length, True))
-        self.prefix_ids = np.array(prefix_df["input_ids"])
-        self.prefix_mask = np.array(prefix_df["attention_mask"])
-        suffix_df = df.apply(self._convert, axis=1, args=(self.suffix_length, False))
-        self.suffix_ids = np.array(suffix_df["input_ids"])
+        assert len(unlearn_df) == len(learn_df)
+
+        self.unlearn_gpt2_prefix = np.array(unlearn_df.iloc[:, 100:150]).astype(
+            np.int64
+        )
+        self.unlearn_gpt2_suffix = np.array(unlearn_df.iloc[:, 150:200]).astype(
+            np.int64
+        )
+
+        self.learn_gpt2_prefix = np.array(learn_df.iloc[:, 100:150]).astype(np.int64)
+        self.learn_gpt2_suffix = np.array(learn_df.iloc[:, 150:200]).astype(np.int64)
+
+        unlearn_prefix_df = unlearn_df.apply(
+            self._convert, axis=1, args=(self.prefix_length, True)
+        )
+        self.unlearn_prefix_ids = np.array(unlearn_prefix_df["input_ids"])
+        self.unlearn_prefix_mask = np.array(unlearn_prefix_df["attention_mask"])
+        unlearn_suffix_df = unlearn_df.apply(
+            self._convert, axis=1, args=(self.suffix_length, False)
+        )
+        self.unlearn_suffix_ids = np.array(unlearn_suffix_df["input_ids"])
+
+        learn_prefix_df = learn_df.apply(
+            self._convert, axis=1, args=(self.prefix_length, True)
+        )
+        self.learn_prefix_ids = np.array(learn_prefix_df["input_ids"])
+        self.learn_prefix_mask = np.array(learn_prefix_df["attention_mask"])
+        learn_suffix_df = learn_df.apply(
+            self._convert, axis=1, args=(self.suffix_length, False)
+        )
+        self.learn_suffix_ids = np.array(learn_suffix_df["input_ids"])
+
+        self.unlearn_flag = np.ones(len(self.unlearn_gpt2_suffix))
+        self.learn_flag = np.ones(len(self.learn_gpt2_suffix))
 
     def _convert(self, row, length, flag):
         message = self.gpt2tokenizer.decode(row)
@@ -49,18 +80,29 @@ class Custom_Dataset(Dataset):
         return pd.Series(source)
 
     def __len__(self):
-        return len(self.gpt2_suffix)
+        return len(self.unlearn_gpt2_suffix)
 
     def __getitem__(self, idx):
         return {
             "id": idx,
-            "gpt2_prefix": self.gpt2_prefix[idx],
-            "gpt2_suffix": self.gpt2_suffix[idx],
-            "prefix_ids": self.prefix_ids[idx].squeeze(),
-            "prefix_mask": self.prefix_mask[idx].squeeze(),
-            "suffix_ids": self.suffix_ids[idx].squeeze(),
-            # "suffix_mask": self.suffix_mask[idx],
+            "unlearn_flag": self.unlearn_flag[idx],
+            "unlearn_gpt2_prefix": self.unlearn_gpt2_prefix[idx],
+            "unlearn_gpt2_suffix": self.unlearn_gpt2_suffix[idx],
+            "unlearn_prefix_ids": self.unlearn_prefix_ids[idx].squeeze(),
+            "unlearn_prefix_mask": self.unlearn_prefix_mask[idx].squeeze(),
+            "unlearn_suffix_ids": self.unlearn_suffix_ids[idx].squeeze(),
+            "learn_flag": self.learn_flag[idx],
+            "learn_gpt2_prefix": self.learn_gpt2_prefix[idx],
+            "learn_gpt2_suffix": self.learn_gpt2_suffix[idx],
+            "learn_prefix_ids": self.learn_prefix_ids[idx].squeeze(),
+            "learn_prefix_mask": self.learn_prefix_mask[idx].squeeze(),
+            "learn_suffix_ids": self.learn_suffix_ids[idx].squeeze(),
         }
+
+    def update(self, ids, unlearn_flag, learn_flag):
+        for i in range(len(ids)):
+            self.unlearn_flag[ids[i]] = unlearn_flag[i]
+            self.learn_flag[ids[i]] = learn_flag[i]
 
 
 if __name__ == "__main__":
