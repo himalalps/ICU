@@ -15,7 +15,7 @@ import torch
 # import torch.nn as nn
 # import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR
-from torch.utils.data import DataLoader, RandomSampler, SubsetRandomSampler
+from torch.utils.data import DataLoader, RandomSampler
 from transformers import (
     GPT2Tokenizer,
     AutoModelForCausalLM,
@@ -25,22 +25,26 @@ from transformers import (
 )
 from torchmetrics.functional import accuracy
 
+exp = "exp2"
+model_type = "125m"
+if not os.path.exists(f"result/{exp}-{model_type}"):
+    os.mkdir(f"result/{exp}-{model_type}")
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/app.log",
+    filename=f"result/{exp}-{model_type}/app.log",
     filemode="w",
 )
 
 logger = logging.getLogger()
 
 
-tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
-model_name_or_path = "EleutherAI/gpt-neo-125m"
+tokenizer_name_or_path = f"EleutherAI/gpt-neo-{model_type}"
+model_name_or_path = f"EleutherAI/gpt-neo-{model_type}"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
-unlearn_data_path = "./datasets/exp/exp0/unlearn/_dataset.npy"
-learn_data_path = "./datasets/exp/exp0/learn/_dataset.npy"
+unlearn_data_path = f"./datasets/exp/{exp}/unlearn/_dataset.npy"
+learn_data_path = f"./datasets/exp/{exp}/learn/_dataset.npy"
 prefix_length = 200
 suffix_length = 200
 target_length = 200
@@ -57,6 +61,7 @@ kl_weight = 0.5
 el_n = [10]
 
 valid_result = []
+bert_score = []
 
 num_epoch = 50
 
@@ -97,18 +102,18 @@ def get_loader(unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer):
         prefix_length,
         suffix_length,
     )
-    candidate = [i for i in range(len(dataset))]
+    sampler = RandomSampler(dataset)
 
     train_dataloader = DataLoader(
         dataset,
-        sampler=SubsetRandomSampler(candidate),
+        sampler=sampler,
         batch_size=batch_size,
         num_workers=num_workers,
     )
     valid_dataloader = DataLoader(
         dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
     )
-    return train_dataloader, valid_dataloader, candidate
+    return train_dataloader, valid_dataloader
 
 
 def predict(message):
@@ -139,10 +144,10 @@ def val(epoch):
         for n, el in zip(el_n, els):
             valid_dict[f"el_{n}"] = el
         valid_result.append(valid_dict)
-        # if acc < 0.2994 and any([el < 0.0499 for el in els]):
-        #     logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
-        #     return True
-        # else:
+        if acc < 0.2994 and any([el < 0.0499 for el in els]):
+            logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
+            return True
+
         torch.cuda.empty_cache()
         return False
 
@@ -198,7 +203,16 @@ def val_score(epoch):
 
     df = pd.DataFrame(data)
     df.sort_values(by="id", ascending=True, inplace=True)
-    df.to_csv(f"./result/epoch{epoch}.csv", index=False)
+    df.to_csv(f"./result/{exp}-{model_type}/epoch{epoch}.csv", index=False)
+
+    bert_score.append(
+        {
+            "epoch": epoch,
+            "P": df["P"].mean(),
+            "R": df["R"].mean(),
+            "F1": df["F1"].mean(),
+        }
+    )
 
     logger.debug(predict("This is a test for the model."))
 
@@ -248,7 +262,13 @@ def validation_ma(epoch):
         preds = torch.stack(preds)
         labels = torch.stack(labels)
 
-        score = accuracy(preds, labels, ignore_index=-100)
+        score = accuracy(
+            preds,
+            labels,
+            task="multiclass",
+            num_classes=tokenizer.pad_token_id,
+            ignore_index=-100,
+        )
         epoch_acc += score.item()
 
     logger.info("acc [epoch {}] {}".format(epoch, epoch_acc / len(val_loader)))
@@ -350,7 +370,7 @@ else:  # GPT2
 model.resize_token_embeddings(len(tokenizer))
 pretrained_model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:9" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model.to(device)
 pretrained_model.to(device)
 
@@ -358,36 +378,33 @@ optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0
 
 # scheduler = StepLR(optimizer, step_size=3, gamma=0.5)
 
-unlearn_loader, val_loader, candidate = get_loader(
+unlearn_loader, val_loader = get_loader(
     unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer
 )
 
-
-# val(0)
-for epoch in range(num_epoch):
+epoch = 0
+val(0)
+while True:
     torch.cuda.empty_cache()
     model.train()
 
     logger.info("Epoch {}: training".format(epoch + 1))
 
-    remove_list = []
     for batch_idx, batch in enumerate(unlearn_loader):
         optimizer.zero_grad()
 
-        input_ids = batch["unlearn_prefix_ids"][batch["unlearn_flag"] != 0].to(device)
-        attention_mask = batch["unlearn_prefix_mask"][batch["unlearn_flag"] != 0].to(
-            device
-        )
-        target_ids = batch["unlearn_suffix_ids"][batch["unlearn_flag"] != 0]
+        input_ids = batch["unlearn_prefix_ids"].to(device)
+        attention_mask = batch["unlearn_prefix_mask"].to(device)
+        target_ids = batch["unlearn_suffix_ids"]
         target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
         target_ids = target_ids.to(device)
 
         outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
         unlearn_loss = outputs[0]
 
-        input_ids = batch["learn_prefix_ids"][batch["learn_flag"] != 0].to(device)
-        attention_mask = batch["learn_prefix_mask"][batch["learn_flag"] != 0].to(device)
-        target_ids = batch["learn_suffix_ids"][batch["learn_flag"] != 0]
+        input_ids = batch["learn_prefix_ids"].to(device)
+        attention_mask = batch["learn_prefix_mask"].to(device)
+        target_ids = batch["learn_suffix_ids"]
         target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
         target_ids = target_ids.to(device)
 
@@ -426,14 +443,14 @@ for epoch in range(num_epoch):
 
     if val(epoch + 1):
         break
-
-    for i in remove_list:
-        candidate.remove(i)
+    epoch += 1
     # scheduler.step()
 
 
-# valid_df = pd.DataFrame(valid_result)
-# valid_df.to_csv("./result/valid.csv", index=False)
-# model.save_pretrained(
-#     f"savemodel/{model_name_or_path}_lr{learning_rate}_uw{unlearn_weight}_lw{learn_weight}_kl{kl_weight}_epoch{num_epoch}"
-# )
+valid_df = pd.DataFrame(valid_result)
+valid_df.to_csv(f"./result/{exp}-{model_type}/valid.csv", index=False)
+bert_df = pd.DataFrame(bert_score)
+bert_df.to_csv(f"./result/{exp}-{model_type}/bert.csv", index=False)
+model.save_pretrained(
+    f"savemodel/{model_name_or_path}_{exp}_lr{learning_rate}_uw{unlearn_weight}_lw{learn_weight}_kl{kl_weight}_epoch{epoch}"
+)

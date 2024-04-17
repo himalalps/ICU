@@ -31,11 +31,11 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 
-tokenizer_name_or_path = "EleutherAI/gpt-neo-2.7B"
-model_name_or_path = "savemodel/savegpt-neo-2_7"
+tokenizer_name_or_path = "EleutherAI/gpt-neo-1_3"
+model_name_or_path = "savemodel/savegpt-neo-1_3b-1"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
-data_path = "./datasets/exp/exp0/unlearn/_dataset.npy"
+data_path = "./datasets/exp/exp1/unlearn/_dataset.npy"
 prefix_length = 200
 suffix_length = 200
 target_length = 200
@@ -173,7 +173,7 @@ def val_score(epoch):
 
     df = pd.DataFrame(data)
     df.sort_values(by="id", ascending=True, inplace=True)
-    df.to_csv(f"./result/epoch{epoch}.csv", index=False)
+    df.to_csv(f"./result/unlearn.csv", index=False)
 
     logger.debug(predict("This is a test for the model."))
 
@@ -223,7 +223,13 @@ def validation_ma(epoch):
         preds = torch.stack(preds)
         labels = torch.stack(labels)
 
-        score = accuracy(preds, labels, ignore_index=-100)
+        score = accuracy(
+            preds,
+            labels,
+            task="multiclass",
+            num_classes=tokenizer.pad_token_id,
+            ignore_index=-100,
+        )
         epoch_acc += score.item()
 
     logger.info("acc [epoch {}] {}".format(epoch, epoch_acc / len(val_loader)))
@@ -307,7 +313,7 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))

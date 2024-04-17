@@ -43,7 +43,6 @@ class Valid_Dataset(Dataset):
                     split=self.type_path,
                     verification_mode="no_checks",
                     cache_dir=self.cache_dir,
-                    trust_remote_code=True,
                 )
             else:
                 dataset = load_dataset(
@@ -51,7 +50,6 @@ class Valid_Dataset(Dataset):
                     split=self.type_path,
                     verification_mode="no_checks",
                     cache_dir=self.cache_dir,
-                    trust_remote_code=True,
                 )
             dataset = dataset.to_pandas()
 
