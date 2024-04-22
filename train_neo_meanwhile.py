@@ -52,7 +52,7 @@ target_length = 200
 batch_size = 8
 num_workers = 8
 
-learning_rate = 2e-6
+learning_rate = 5e-5
 
 unlearn_weight = 1.0
 learn_weight = 0.5
@@ -63,12 +63,10 @@ el_n = [10]
 valid_result = []
 bert_score = []
 
-num_epoch = 50
-
 logging.info("learn and unlearn in one batch")
 logging.info("model name: {}".format(model_name_or_path))
 logging.info("batch_size: {}".format(batch_size))
-logging.info("learning_rate: {}\tnum_epoch: {}".format(learning_rate, num_epoch))
+logging.info("learning_rate: {}".format(learning_rate))
 logging.info(
     "unlearn_weight: {}\tlearn_weight: {}\tkl_weight: {}".format(
         unlearn_weight, learn_weight, kl_weight

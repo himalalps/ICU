@@ -16,8 +16,10 @@ facebook
 gpt2
 bert-base-uncased
 all-MiniLM-L6-v2
+Meta-Llama-3-8B
 
 
 tests
 result
 savemodel
+llama

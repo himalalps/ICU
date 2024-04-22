@@ -40,7 +40,7 @@ logger = logging.getLogger()
 
 
 tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
-model_name_or_path = "savemodel/savegpt-neo-125m_1"
+model_name_or_path = "savemodel/EleutherAI/gpt-neo-125m_exp1_lr2e-06_uw1.0_lw0.5_kl0.5_epoch78_updateboth"
 prefix_length = 512
 suffix_length = 512
 cache_dir = "./.cache/"
@@ -112,7 +112,7 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 try:

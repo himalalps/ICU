@@ -31,11 +31,11 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 
-tokenizer_name_or_path = "EleutherAI/gpt-neo-1_3"
-model_name_or_path = "savemodel/savegpt-neo-1_3b-1"
+tokenizer_name_or_path = "EleutherAI/gpt-neo-1.3B"
+model_name_or_path = "savemodel/savegpt-neo-1_3b-4"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
-data_path = "./datasets/exp/exp1/unlearn/_dataset.npy"
+data_path = "./datasets/exp/exp4/unlearn/_dataset.npy"
 prefix_length = 200
 suffix_length = 200
 target_length = 200
@@ -313,7 +313,7 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))

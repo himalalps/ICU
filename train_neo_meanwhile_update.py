@@ -25,10 +25,10 @@ from transformers import (
 )
 from torchmetrics.functional import accuracy
 
-exp = "exp1"
+exp = "exp4"
 model_type = "125m"
 if not os.path.exists(f"result/{exp}-{model_type}-update"):
-    os.mkdirs(f"result/{exp}-{model_type}-update")
+    os.mkdir(f"result/{exp}-{model_type}-update")
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -43,7 +43,6 @@ tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
 model_name_or_path = "EleutherAI/gpt-neo-125m"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
-exp = "exp1"
 unlearn_data_path = f"./datasets/exp/{exp}/unlearn/_dataset.npy"
 learn_data_path = f"./datasets/exp/{exp}/learn/_dataset.npy"
 prefix_length = 200
@@ -64,12 +63,10 @@ el_n = [10]
 valid_result = []
 bert_score = []
 
-num_epoch = 50
-
-logging.info("learn and unlearn in one batch")
+logging.info("learn and unlearn in one batch and update")
 logging.info("model name: {}".format(model_name_or_path))
 logging.info("batch_size: {}".format(batch_size))
-logging.info("learning_rate: {}\tnum_epoch: {}".format(learning_rate, num_epoch))
+logging.info("learning_rate: {}".format(learning_rate))
 logging.info(
     "unlearn_weight: {}\tlearn_weight: {}\tkl_weight: {}".format(
         unlearn_weight, learn_weight, kl_weight
@@ -122,7 +119,7 @@ def predict(message):
     model_outputs = model.generate(
         model_inputs,
         max_new_tokens=100,
-        num_beams=1,
+        num_beams=2,
         pad_token_id=tokenizer.eos_token_id,
     )
     model_outputs = model_outputs[0, len(model_inputs[0]) :]
@@ -186,7 +183,7 @@ def val_score(epoch):
         )
 
         unlearn_flag = []
-        learn_flag = [i for i in range(len(P))]
+        learn_flag = []
         for i in range(len(P)):
             unlearn_flag.append(0 if F1[i].item() < 0.4 else 1)
             learn_flag.append(0 if F1[i].item() < 0.4 else 1)
@@ -384,7 +381,7 @@ else:  # GPT2
 model.resize_token_embeddings(len(tokenizer))
 pretrained_model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
 model.to(device)
 pretrained_model.to(device)
 
