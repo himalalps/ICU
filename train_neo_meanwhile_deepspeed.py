@@ -255,13 +255,20 @@ def validation_ma(epoch):
         preds = torch.stack(preds)
         labels = torch.stack(labels)
 
-        score = accuracy(
-            preds,
-            labels,
-            task="multiclass",
-            num_classes=tokenizer.pad_token_id,
-            ignore_index=-100,
-        )
+        try:
+            score = accuracy(
+                preds,
+                labels,
+                ignore_index=-100,
+            )
+        except:
+            score = accuracy(
+                preds,
+                labels,
+                task="multiclass",
+                num_classes=tokenizer.pad_token_id,
+                ignore_index=-100,
+            )
         epoch_acc += score.item()
 
     logger.info("acc [epoch {}] {}".format(epoch, epoch_acc / len(val_loader)))

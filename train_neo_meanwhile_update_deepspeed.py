@@ -1,5 +1,5 @@
 from utils import batch_compute_bert_score
-from Datasets_neo import Custom_Dataset
+from Datasets_mean import Custom_Dataset
 
 
 import os
@@ -15,7 +15,7 @@ import torch
 # import torch.nn as nn
 # import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader, SubsetRandomSampler
 from transformers import (
     GPT2Tokenizer,
     AutoModelForCausalLM,
@@ -25,10 +25,14 @@ from transformers import (
 )
 from torchmetrics.functional import accuracy
 
+exp = "exp0"
+model_type = "125m"
+if not os.path.exists(f"result/{exp}-{model_type}-update"):
+    os.mkdir(f"result/{exp}-{model_type}-update")
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/app.log",
+    filename=f"result/{exp}-{model_type}-update/app.log",
     filemode="w",
 )
 
@@ -39,24 +43,37 @@ tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
 model_name_or_path = "EleutherAI/gpt-neo-125m"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
-unlearn_data_path = "./datasets/test/_dataset.npy"
-learn_data_path = "./datasets/test128/_dataset.npy"
+unlearn_data_path = f"./datasets/exp/{exp}/unlearn/_dataset.npy"
+learn_data_path = f"./datasets/exp/{exp}/learn/_dataset.npy"
 prefix_length = 200
 suffix_length = 200
 target_length = 200
-epochs = 30
+
 batch_size = 8
 num_workers = 8
 
-truncate_len = 128
-self_predict = True
-lambda_val = 0.5
+device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
+
+learning_rate = 2e-6
+
+unlearn_weight = 1.0
+learn_weight = 0.5
+kl_weight = 0.5
 
 el_n = [10]
 
 valid_result = []
+bert_score = []
 
-num_epoch = 30
+logging.info("learn and unlearn in one batch and update")
+logging.info("model name: {}".format(model_name_or_path))
+logging.info("batch_size: {}".format(batch_size))
+logging.info("learning_rate: {}".format(learning_rate))
+logging.info(
+    "unlearn_weight: {}\tlearn_weight: {}\tkl_weight: {}".format(
+        unlearn_weight, learn_weight, kl_weight
+    )
+)
 
 
 def seed_everything(seed=42):
@@ -76,23 +93,27 @@ seed = 42
 seed_everything(seed)
 
 
-def get_loader(data_path, gpt2tokenizer, tokenizer):
+def get_loader(unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer):
     dataset = Custom_Dataset(
-        data_path,
+        unlearn_data_path,
+        learn_data_path,
         gpt2tokenizer,
         tokenizer,
         prefix_length,
         suffix_length,
     )
+    candidate = [i for i in range(len(dataset))]
 
-    sampler = RandomSampler(dataset)
     train_dataloader = DataLoader(
-        dataset, sampler=sampler, batch_size=batch_size, num_workers=num_workers
+        dataset,
+        sampler=SubsetRandomSampler(candidate),
+        batch_size=batch_size,
+        num_workers=num_workers,
     )
     valid_dataloader = DataLoader(
         dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
     )
-    return train_dataloader, valid_dataloader
+    return train_dataloader, valid_dataloader, dataset, candidate
 
 
 def predict(message):
@@ -100,7 +121,7 @@ def predict(message):
     model_outputs = model.generate(
         model_inputs,
         max_new_tokens=100,
-        num_beams=1,
+        num_beams=2,
         pad_token_id=tokenizer.eos_token_id,
     )
     model_outputs = model_outputs[0, len(model_inputs[0]) :]
@@ -123,21 +144,25 @@ def val(epoch):
         for n, el in zip(el_n, els):
             valid_dict[f"el_{n}"] = el
         valid_result.append(valid_dict)
-    if acc < 0.2994 and any([el < 0.0499 for el in els]):
-        logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
-        return True
-    else:
+        if acc < 0.2994 and any([el < 0.0499 for el in els]):
+            logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
+            return True
+
         torch.cuda.empty_cache()
         return False
 
 
 def val_score(epoch):
+    global unlearn_weight
+    global learn_weight
+    global kl_weight
     data = []
     model.eval()
+    unlearn_cnt = 0
     for batch_idx, batch in enumerate(val_loader):
-        reference_list = gpt2tokenizer.batch_decode(batch["gpt2_suffix"])
+        reference_list = gpt2tokenizer.batch_decode(batch["unlearn_gpt2_suffix"])
 
-        message = gpt2tokenizer.batch_decode(batch["gpt2_prefix"])
+        message = gpt2tokenizer.batch_decode(batch["unlearn_gpt2_prefix"])
         source = tokenizer(
             message,
             max_length=50,
@@ -158,7 +183,12 @@ def val_score(epoch):
         P, R, F1 = batch_compute_bert_score(
             candidate_list, reference_list, bert_name_or_path, device
         )
+
+        unlearn_flag = []
+        learn_flag = []
         for i in range(len(P)):
+            unlearn_flag.append(0 if F1[i].item() < 0.4 else 1)
+            learn_flag.append(0 if F1[i].item() < 0.4 else 1)
             data.append(
                 {
                     "id": batch["id"][i].item(),
@@ -180,9 +210,22 @@ def val_score(epoch):
         if batch_idx % 50 == 0:
             logger.debug(" validating.. {}/{}".format(batch_idx, len(val_loader)))
 
+        dataset.update(batch["id"], unlearn_flag, learn_flag)
+        unlearn_cnt += unlearn_flag.count(1)
+    logging.debug(unlearn_cnt)
+
     df = pd.DataFrame(data)
     df.sort_values(by="id", ascending=True, inplace=True)
-    df.to_csv(f"./result/epoch{epoch}.csv", index=False)
+    df.to_csv(f"result/{exp}-{model_type}-update/epoch{epoch}.csv", index=False)
+
+    bert_score.append(
+        {
+            "epoch": epoch,
+            "P": df["P"].mean(),
+            "R": df["R"].mean(),
+            "F1": df["F1"].mean(),
+        }
+    )
 
     logger.debug(predict("This is a test for the model."))
 
@@ -191,9 +234,9 @@ def validation_forget(epoch):
     model.eval()
     epoch_loss = 0
     for batch_idx, batch in enumerate(val_loader):
-        input_ids = batch["prefix_ids"].to(device)
-        attention_mask = batch["prefix_mask"].to(device)
-        target_ids = batch["suffix_ids"]
+        input_ids = batch["unlearn_prefix_ids"].to(device)
+        attention_mask = batch["unlearn_prefix_mask"].to(device)
+        target_ids = batch["unlearn_suffix_ids"]
         target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
         target_ids = target_ids.to(device)
 
@@ -209,7 +252,7 @@ def validation_ma(epoch):
     epoch_acc = 0
 
     for batch_idx, batch in enumerate(val_loader):
-        input_ids = batch["prefix_ids"].to(device)
+        input_ids = batch["unlearn_prefix_ids"].to(device)
 
         labels, preds = [], []
         for i in range(1, target_length):
@@ -232,7 +275,20 @@ def validation_ma(epoch):
         preds = torch.stack(preds)
         labels = torch.stack(labels)
 
-        score = accuracy(preds, labels, ignore_index=-100)
+        try:
+            score = accuracy(
+                preds,
+                labels,
+                ignore_index=-100,
+            )
+        except:
+            score = accuracy(
+                preds,
+                labels,
+                task="multiclass",
+                num_classes=tokenizer.pad_token_id,
+                ignore_index=-100,
+            )
         epoch_acc += score.item()
 
     logger.info("acc [epoch {}] {}".format(epoch, epoch_acc / len(val_loader)))
@@ -248,7 +304,7 @@ def validation_el(epoch):
     el_score = {n: [] for n in el_n}
 
     for batch_idx, batch in enumerate(val_loader):
-        input_ids = batch["prefix_ids"].to(device)
+        input_ids = batch["unlearn_prefix_ids"].to(device)
 
         cur_batch_size = input_ids.shape[0]
         numerator = {n: [0] * cur_batch_size for n in el_n}
@@ -290,12 +346,19 @@ def validation_el(epoch):
 gpt2tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained(gpt2_name_or_path)
 gpt2tokenizer.padding_side = "left"
 tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_name_or_path)
+tokenizer.padding_side = "left"
 if "gpt" in tokenizer_name_or_path:
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
 # Different models have different kwargs
 if "gpt-neo" in model_name_or_path:
     model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
+        model_name_or_path,
+        resid_dropout=0,
+        embed_dropout=0,
+        attention_dropout=0,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+    pretrained_model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         resid_dropout=0,
         embed_dropout=0,
@@ -306,6 +369,9 @@ elif "opt" in model_name_or_path:
     model: OPTForCausalLM = AutoModelForCausalLM.from_pretrained(
         model_name_or_path, dropout=0, attention_dropout=0, activation_dropout=0
     )
+    pretrained_model = AutoModelForCausalLM.from_pretrained(
+        model_name_or_path, dropout=0, attention_dropout=0, activation_dropout=0
+    )
 else:  # GPT2
     model: GPT2LMHeadModel = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
@@ -314,61 +380,102 @@ else:  # GPT2
         attn_pdrop=0,
         pad_token_id=tokenizer.eos_token_id,
     )
+    pretrained_model = AutoModelForCausalLM.from_pretrained(
+        model_name_or_path,
+        resid_pdrop=0,
+        embd_pdrop=0,
+        attn_pdrop=0,
+        pad_token_id=tokenizer.eos_token_id,
+    )
 model.resize_token_embeddings(len(tokenizer))
+pretrained_model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:6" if torch.cuda.is_available() else "cpu")
+
 model.to(device)
+pretrained_model.to(device)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.98))
 
 # scheduler = StepLR(optimizer, step_size=3, gamma=0.5)
 
-_, val_loader = get_loader(unlearn_data_path, gpt2tokenizer, tokenizer)
-train_loader, _ = get_loader(learn_data_path, gpt2tokenizer, tokenizer)
+unlearn_loader, val_loader, dataset, candidate = get_loader(
+    unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer
+)
+len_data = len(dataset)
 
+epoch = 0
 val(0)
-for epoch in range(num_epoch):
+while True:
     torch.cuda.empty_cache()
     model.train()
-    epoch_loss = 0
 
     logger.info("Epoch {}: training".format(epoch + 1))
 
-    for batch_idx, batch in enumerate(train_loader):
+    remove_list = []
+    for batch_idx, batch in enumerate(unlearn_loader):
         optimizer.zero_grad()
-        input_ids = batch["prefix_ids"].to(device)
-        attention_mask = batch["prefix_mask"].to(device)
-        target_ids = batch["suffix_ids"]
+
+        input_ids = batch["unlearn_prefix_ids"][batch["unlearn_flag"] != 0].to(device)
+        attention_mask = batch["unlearn_prefix_mask"][batch["unlearn_flag"] != 0].to(
+            device
+        )
+        target_ids = batch["unlearn_suffix_ids"][batch["unlearn_flag"] != 0]
         target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
         target_ids = target_ids.to(device)
 
         outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
-        current_loss = outputs[0]
+        unlearn_loss = outputs[0]
 
-        loss = -lambda_val * current_loss
-        epoch_loss += current_loss
+        input_ids = batch["learn_prefix_ids"][batch["learn_flag"] != 0].to(device)
+        attention_mask = batch["learn_prefix_mask"][batch["learn_flag"] != 0].to(device)
+        target_ids = batch["learn_suffix_ids"][batch["learn_flag"] != 0]
+        target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
+        target_ids = target_ids.to(device)
+
+        outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
+        learn_loss = outputs[0]
+
+        with torch.no_grad():
+            pretrained_outputs = pretrained_model(
+                input_ids, attention_mask=attention_mask, labels=target_ids
+            )
+        prob_p = torch.nn.functional.softmax(pretrained_outputs.logits, -1)
+        prob_q = torch.nn.functional.softmax(outputs.logits, -1)
+
+        kl_loss = -(prob_p * torch.log(prob_q + 1e-12)).sum(-1).mean()
+
+        loss = (
+            -unlearn_weight * unlearn_loss
+            + learn_weight * learn_loss
+            + kl_weight * kl_loss
+        )
 
         loss.backward()
         optimizer.step()
 
         logger.info(
-            "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
+            "Train Epoch: {} [{}/{} ({:.0f}%)]\tunlearn_loss: {:.6f}\tlearn_loss: {:.6f}\tkl_loss: {:.6f}".format(
                 epoch + 1,
                 batch_idx,
-                len(train_loader),
-                100.0 * batch_idx / len(train_loader),
-                current_loss.item(),
+                len(unlearn_loader),
+                100.0 * batch_idx / len(unlearn_loader),
+                unlearn_loss.item(),
+                learn_loss.item(),
+                kl_loss.item(),
             )
         )
 
-    logger.info(
-        "Epoch {} finished, mean loss: {:.6f}".format(
-            epoch + 1, epoch_loss.item() / len(train_loader)
-        )
-    )
     if val(epoch + 1):
         break
+    epoch += 1
+
     # scheduler.step()
 
+
 valid_df = pd.DataFrame(valid_result)
-valid_df.to_csv("./result/valid.csv", index=False)
+valid_df.to_csv(f"result/{exp}-{model_type}-update/valid.csv", index=False)
+bert_df = pd.DataFrame(bert_score)
+bert_df.to_csv(f"result/{exp}-{model_type}-update/bert.csv", index=False)
+model.save_pretrained(
+    f"savemodel/{model_name_or_path}_{exp}_lr{learning_rate}_uw{unlearn_weight}_lw{learn_weight}_kl{kl_weight}_epoch{epoch}_updateboth"
+)

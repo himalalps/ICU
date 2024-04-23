@@ -19,10 +19,14 @@ from torch.utils.data import DataLoader, RandomSampler
 from transformers import GPT2Tokenizer, AutoModelForCausalLM, GPTNeoForCausalLM, OPTForCausalLM, GPT2LMHeadModel
 from torchmetrics.functional import accuracy
 
+exp = "exp0"
+model_type = "125m"
+if not os.path.exists(f"result/{exp}-{model_type}-update"):
+    os.mkdir(f"result/{exp}-{model_type}-update")
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/app.log",
+    filename=f"result/{exp}-{model_type}-update/app.log",
     filemode="w",
 )
 

@@ -25,7 +25,7 @@ from transformers import (
 )
 from torchmetrics.functional import accuracy
 
-exp = "exp4"
+exp = "exp0"
 model_type = "125m"
 if not os.path.exists(f"result/{exp}-{model_type}-update"):
     os.mkdir(f"result/{exp}-{model_type}-update")
@@ -51,6 +51,8 @@ target_length = 200
 
 batch_size = 8
 num_workers = 8
+
+device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
 
 learning_rate = 2e-6
 
@@ -273,13 +275,20 @@ def validation_ma(epoch):
         preds = torch.stack(preds)
         labels = torch.stack(labels)
 
-        score = accuracy(
-            preds,
-            labels,
-            task="multiclass",
-            num_classes=tokenizer.pad_token_id,
-            ignore_index=-100,
-        )
+        try:
+            score = accuracy(
+                preds,
+                labels,
+                ignore_index=-100,
+            )
+        except:
+            score = accuracy(
+                preds,
+                labels,
+                task="multiclass",
+                num_classes=tokenizer.pad_token_id,
+                ignore_index=-100,
+            )
         epoch_acc += score.item()
 
     logger.info("acc [epoch {}] {}".format(epoch, epoch_acc / len(val_loader)))
@@ -381,7 +390,7 @@ else:  # GPT2
 model.resize_token_embeddings(len(tokenizer))
 pretrained_model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
+
 model.to(device)
 pretrained_model.to(device)
 
