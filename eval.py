@@ -10,7 +10,6 @@ import pandas as pd
 
 import torch
 
-from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, RandomSampler
 from transformers import (
     GPT2Tokenizer,
@@ -20,11 +19,14 @@ from transformers import (
     GPT2LMHeadModel,
 )
 from torchmetrics.functional import accuracy
+import nltk
+from nltk.translate.bleu_score import sentence_bleu
+
 
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/eval.log",
+    filename="result/eval-.log",
     filemode="w",
 )
 
@@ -50,6 +52,8 @@ lambda_val = 0.5
 el_n = [10]
 
 valid_result = []
+
+logger.info(model_name_or_path)
 
 
 def seed_everything(seed=42):
@@ -146,15 +150,24 @@ def val_score(epoch):
             pad_token_id=tokenizer.eos_token_id,
         )
         candidate_list = [candidate[50:] for candidate in candidate_list]
+        diff = [
+            len(set(candidate.tolist())) / len(candidate)
+            for candidate in candidate_list
+        ]
         candidate_list = tokenizer.batch_decode(candidate_list)
 
         P, R, F1 = batch_compute_bert_score(
             candidate_list, reference_list, bert_name_or_path, device
         )
         for i in range(len(P)):
+            reference = nltk.word_tokenize(reference_list[i].lower())
+            candidate = nltk.word_tokenize(candidate_list[i].lower())
+            bleu_score = sentence_bleu([reference], candidate)
             data.append(
                 {
                     "id": batch["id"][i].item(),
+                    "diff": diff[i],
+                    "bleu": bleu_score,
                     "P": P[i].item(),
                     "R": R[i].item(),
                     "F1": F1[i].item(),
@@ -166,16 +179,30 @@ def val_score(epoch):
             logger.debug("candidate {}".format(candidate_list[i]))
             logger.debug("reference {}".format(reference_list[i]))
             logger.debug(
-                "id {} P {} R {} F1 {}".format(
-                    batch["id"][i].item(), P[i].item(), R[i].item(), F1[i].item()
+                "id {} diff {} bleu {} P {} R {} F1 {}".format(
+                    batch["id"][i].item(),
+                    diff[i],
+                    bleu_score,
+                    P[i].item(),
+                    R[i].item(),
+                    F1[i].item(),
                 )
             )
+            
 
     df = pd.DataFrame(data)
     df.sort_values(by="id", ascending=True, inplace=True)
     df.to_csv(f"./result/unlearn.csv", index=False)
 
-    logger.debug(predict("This is a test for the model."))
+    logger.info("diff {}".format(df["diff"].mean()))
+    logger.info("bleu {}".format(df["bleu"].mean()))
+    logger.info(
+        "bert_score P {} R {} F1 {}".format(
+            df["P"].mean(), df["R"].mean(), df["F1"].mean()
+        )
+    )
+
+    logger.debug(predict("Who is Harry Potter?"))
 
 
 def validation_forget(epoch):
@@ -223,6 +250,10 @@ def validation_ma(epoch):
         preds = torch.stack(preds)
         labels = torch.stack(labels)
 
+        # correct = preds == labels
+        # accuracy_per_sample = correct.sum(dim=0).float()
+        # logging.debug(accuracy_per_sample)
+        # epoch_acc += (accuracy_per_sample / preds.shape[0]).mean()
         try:
             score = accuracy(
                 preds,
@@ -234,7 +265,7 @@ def validation_ma(epoch):
                 preds,
                 labels,
                 task="multiclass",
-                num_classes=tokenizer.pad_token_id,
+                num_classes=tokenizer.vocab_size,
                 ignore_index=-100,
             )
         epoch_acc += score.item()
@@ -320,7 +351,7 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:4" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))

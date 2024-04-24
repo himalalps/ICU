@@ -32,22 +32,22 @@ from utils import (
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/valid.log",
+    filename="result/exp0-125m-update/valid.log",
     filemode="w",
 )
 
 logger = logging.getLogger()
 
 
-tokenizer_name_or_path = "EleutherAI/gpt-neo-2.7B"
-model_name_or_path = "savemodel/savegpt-neo-2_7b-1"
+tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
+model_name_or_path = "savemodel/EleutherAI/gpt-neo-125m_exp0_lr2e-06_uw1.0_lw0.5_kl0.5_epoch30_updateboth"
 prefix_length = 512
 suffix_length = 512
 cache_dir = "./.cache/"
 batch_size = 32
 num_workers = 48
 
-el_n = [10]
+logger.info(model_name_or_path)
 
 valid_data = [
     ["datasets/lambada.csv", "", "test"],
@@ -112,7 +112,7 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:4" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 try:
