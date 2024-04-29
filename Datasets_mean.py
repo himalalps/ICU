@@ -13,6 +13,7 @@ class Custom_Dataset(Dataset):
         gpt2tokenizer,
         tokenizer,
         model=None,
+        device=torch.device("cpu"),
         prefix_length=50,
         suffix_length=50,
         batch_size=8,
@@ -24,6 +25,7 @@ class Custom_Dataset(Dataset):
         self.gpt2tokenizer: GPT2Tokenizer = gpt2tokenizer
         self.tokenizer: GPT2Tokenizer = tokenizer
         self.model: GPTNeoForCausalLM = model
+        self.device = device
         self.prefix_length = prefix_length
         self.suffix_length = suffix_length
         self.batch_size = batch_size
@@ -83,13 +85,13 @@ class Custom_Dataset(Dataset):
                     self.learn_prefix_ids[id]
                     for id in range(i * self.batch_size, (i + 1) * self.batch_size)
                 ]
-            ).to(self.model.device)
+            ).to(self.device)
             attention_mask = torch.cat(
                 [
                     self.learn_prefix_mask[id]
                     for id in range(i * self.batch_size, (i + 1) * self.batch_size)
                 ]
-            ).to(self.model.device)
+            ).to(self.device)
             target_ids = torch.cat(
                 [
                     self.learn_suffix_ids[id]
@@ -97,7 +99,7 @@ class Custom_Dataset(Dataset):
                 ]
             )
             target_ids[target_ids[:, :] == self.tokenizer.pad_token_id] = -100
-            target_ids = target_ids.to(self.model.device)
+            target_ids = target_ids.to(self.device)
             with torch.no_grad():
                 outputs = self.model(
                     input_ids, attention_mask=attention_mask, labels=target_ids
@@ -147,31 +149,31 @@ class Custom_Dataset(Dataset):
             self.learn_flag[ids[i]] = learn_flag[i]
 
 
-if __name__ == "__main__":
-    tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
-    gpt2_name_or_path = "gpt2"
-    unlearn_data_path = "./datasets/exp/exp0/unlearn/_dataset.npy"
-    learn_data_path = "./datasets/exp/exp0/learn/_dataset.npy"
+# if __name__ == "__main__":
+#     tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
+#     gpt2_name_or_path = "gpt2"
+#     unlearn_data_path = "./datasets/exp/exp0/unlearn/_dataset.npy"
+#     learn_data_path = "./datasets/exp/exp0/learn/_dataset.npy"
 
-    gpt2tokenizer = GPT2Tokenizer.from_pretrained(gpt2_name_or_path)
-    tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_name_or_path)
-    model = GPTNeoForCausalLM.from_pretrained(
-        tokenizer_name_or_path,
-        resid_dropout=0,
-        embed_dropout=0,
-        attention_dropout=0,
-        pad_token_id=tokenizer.eos_token_id,
-    )
-    gpt2tokenizer.padding_side = "left"
-    tokenizer.padding_side = "left"
-    tokenizer.pad_token = tokenizer.eos_token
-    model.resize_token_embeddings(len(tokenizer))
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+#     gpt2tokenizer = GPT2Tokenizer.from_pretrained(gpt2_name_or_path)
+#     tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_name_or_path)
+#     model = GPTNeoForCausalLM.from_pretrained(
+#         tokenizer_name_or_path,
+#         resid_dropout=0,
+#         embed_dropout=0,
+#         attention_dropout=0,
+#         pad_token_id=tokenizer.eos_token_id,
+#     )
+#     gpt2tokenizer.padding_side = "left"
+#     tokenizer.padding_side = "left"
+#     tokenizer.pad_token = tokenizer.eos_token
+#     model.resize_token_embeddings(len(tokenizer))
+#     device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
-    model.to(device)
+#     model.to(device)
 
-    dataset = Custom_Dataset(
-        unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer, model
-    )
-    # print(len(dataset))
-    # print(dataset[10])
+#     dataset = Custom_Dataset(
+#         unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer, model
+#     )
+# print(len(dataset))
+# print(dataset[10])

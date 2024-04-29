@@ -26,7 +26,7 @@ from nltk.translate.bleu_score import sentence_bleu
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/eval-.log",
+    filename="result/eval.log",
     filemode="w",
 )
 
@@ -34,20 +34,18 @@ logger = logging.getLogger()
 
 
 tokenizer_name_or_path = "EleutherAI/gpt-neo-2.7B"
-model_name_or_path = "savemodel/savegpt-neo-2_7b-1"
+model_name_or_path = "savemodel/savegpt-neo-2_7b-4"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
-data_path = "./datasets/exp/exp1/unlearn/_dataset.npy"
+data_path = "./datasets/exp/exp4/unlearn/_dataset.npy"
 prefix_length = 200
 suffix_length = 200
 target_length = 200
-epochs = 30
+
 batch_size = 8
 num_workers = 8
 
-truncate_len = 128
-self_predict = True
-lambda_val = 0.5
+device = torch.device("cuda:4" if torch.cuda.is_available() else "cpu")
 
 el_n = [10]
 
@@ -131,7 +129,7 @@ def val(epoch):
 def val_score(epoch):
     data = []
     model.eval()
-    for batch_idx, batch in enumerate(train_loader):
+    for batch_idx, batch in enumerate(val_loader):
         reference_list = gpt2tokenizer.batch_decode(batch["gpt2_suffix"])
 
         message = gpt2tokenizer.batch_decode(batch["gpt2_prefix"])
@@ -188,7 +186,6 @@ def val_score(epoch):
                     F1[i].item(),
                 )
             )
-            
 
     df = pd.DataFrame(data)
     df.sort_values(by="id", ascending=True, inplace=True)
@@ -351,7 +348,7 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+
 model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))

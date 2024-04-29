@@ -1,21 +1,19 @@
 from utils import batch_compute_bert_score
-from Datasets_neo import Custom_Dataset
+from Datasets_mean import Custom_Dataset
 
 
 import os
 import logging
 import random
+import argparse
 import numpy as np
 import pandas as pd
 
-# import matplotlib.pyplot as plt
 
 import torch
+import deepspeed
 
-# import torch.nn as nn
-# import torch.nn.functional as F
-from torch.optim.lr_scheduler import StepLR
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader, SubsetRandomSampler
 from transformers import (
     GPT2Tokenizer,
     AutoModelForCausalLM,
@@ -24,39 +22,64 @@ from transformers import (
     GPT2LMHeadModel,
 )
 from torchmetrics.functional import accuracy
+import nltk
+from nltk.translate.bleu_score import sentence_bleu
 
+exp = "exp0"
+model_type = "2.7B"
+if not os.path.exists(f"result/{exp}-{model_type}-update"):
+    os.mkdir(f"result/{exp}-{model_type}-update")
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/app.log",
+    filename=f"result/{exp}-{model_type}-update/app.log",
     filemode="w",
 )
 
 logger = logging.getLogger()
 
+# deepspeed.ops.op_builder.CPUAdamBuilder().load()
+parser = argparse.ArgumentParser()
+parser.add_argument("--local_rank", type=int, default=0)
+parser = deepspeed.add_config_arguments(parser)
+args = parser.parse_args()
 
-tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
-model_name_or_path = "EleutherAI/gpt-neo-125m"
+tokenizer_name_or_path = f"EleutherAI/gpt-neo-{model_type}"
+model_name_or_path = f"EleutherAI/gpt-neo-{model_type}"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
-unlearn_data_path = "./datasets/test/_dataset.npy"
-learn_data_path = "./datasets/learn/_dataset.npy"
+unlearn_data_path = f"./datasets/exp/{exp}/unlearn/_dataset.npy"
+learn_data_path = f"./datasets/exp/{exp}/learn/_dataset.npy"
 prefix_length = 200
 suffix_length = 200
 target_length = 200
-epochs = 30
-batch_size = 8
+
+batch_size = 4
 num_workers = 8
 
-truncate_len = 128
-self_predict = True
-lambda_val = 0.5
+device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
+
+learning_rate = 2e-6
+
+unlearn_weight = 1.0
+learn_weight = 0.5
+kl_weight = 0.5
 
 el_n = [10]
 
 valid_result = []
+scores = []
 
-num_epoch = 30
+logging.info("learn and unlearn in one batch and update")
+logging.info("model name: {}".format(model_name_or_path))
+logging.info("batch_size: {}".format(batch_size))
+logging.info("learning_rate: {}".format(learning_rate))
+logging.info(
+    "unlearn_weight: {}\tlearn_weight: {}\tkl_weight: {}".format(
+        unlearn_weight, learn_weight, kl_weight
+    )
+)
+logger.info("standard: ma 0.2994 or el 0.0499")
 
 
 def seed_everything(seed=42):
@@ -76,23 +99,30 @@ seed = 42
 seed_everything(seed)
 
 
-def get_loader(data_path, gpt2tokenizer, tokenizer):
+def get_loader(unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer, model):
     dataset = Custom_Dataset(
-        data_path,
+        unlearn_data_path,
+        learn_data_path,
         gpt2tokenizer,
         tokenizer,
+        model,
+        device,
         prefix_length,
         suffix_length,
+        batch_size,
     )
+    candidate = [i for i in range(len(dataset))]
 
-    sampler = RandomSampler(dataset)
     train_dataloader = DataLoader(
-        dataset, sampler=sampler, batch_size=batch_size, num_workers=num_workers
+        dataset,
+        sampler=SubsetRandomSampler(candidate),
+        batch_size=batch_size,
+        num_workers=num_workers,
     )
     valid_dataloader = DataLoader(
         dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
     )
-    return train_dataloader, valid_dataloader
+    return train_dataloader, valid_dataloader, dataset, candidate
 
 
 def predict(message):
@@ -111,7 +141,7 @@ def predict(message):
 def val(epoch):
     logger.info("Validating epoch {}".format(epoch))
     with torch.no_grad():
-        val_score(epoch)
+        unlearn_cnt = val_score(epoch)
         val_loss = validation_forget(epoch)
         acc = validation_ma(epoch)
         els = validation_el(epoch)
@@ -123,10 +153,13 @@ def val(epoch):
         for n, el in zip(el_n, els):
             valid_dict[f"el_{n}"] = el
         valid_result.append(valid_dict)
-    if acc < 0.2994 and any([el < 0.0499 for el in els]):
-        logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
-        return True
-    else:
+        if acc < 0.2994 or any([el < 0.0499 for el in els]):
+            logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
+            return True
+        if unlearn_cnt < 10:
+            logger.info("Epoch {} should stop, left {}".format(epoch, unlearn_cnt))
+            return True
+
         torch.cuda.empty_cache()
         return False
 
@@ -134,10 +167,11 @@ def val(epoch):
 def val_score(epoch):
     data = []
     model.eval()
+    unlearn_cnt = 0
     for batch_idx, batch in enumerate(val_loader):
-        reference_list = gpt2tokenizer.batch_decode(batch["gpt2_suffix"])
+        reference_list = gpt2tokenizer.batch_decode(batch["unlearn_gpt2_suffix"])
 
-        message = gpt2tokenizer.batch_decode(batch["gpt2_prefix"])
+        message = gpt2tokenizer.batch_decode(batch["unlearn_gpt2_prefix"])
         source = tokenizer(
             message,
             max_length=50,
@@ -153,15 +187,33 @@ def val_score(epoch):
             pad_token_id=tokenizer.eos_token_id,
         )
         candidate_list = [candidate[50:] for candidate in candidate_list]
+        diff = [
+            len(set(candidate.tolist())) / len(candidate)
+            for candidate in candidate_list
+        ]
         candidate_list = tokenizer.batch_decode(candidate_list)
 
         P, R, F1 = batch_compute_bert_score(
             candidate_list, reference_list, bert_name_or_path, device
         )
+
+        unlearn_flag = []
+        learn_flag = []
         for i in range(len(P)):
+            reference = nltk.word_tokenize(reference_list[i].lower())
+            candidate = nltk.word_tokenize(candidate_list[i].lower())
+            bleu_score = sentence_bleu([reference], candidate)
+            if F1[i].item() < 0.4 or diff[i] < 0.25 or bleu_score < 0.05:
+                unlearn_flag.append(0)
+                learn_flag.append(0)
+            else:
+                unlearn_flag.append(1)
+                learn_flag.append(1)
             data.append(
                 {
                     "id": batch["id"][i].item(),
+                    "diff": diff[i],
+                    "bleu": bleu_score,
                     "P": P[i].item(),
                     "R": R[i].item(),
                     "F1": F1[i].item(),
@@ -173,27 +225,56 @@ def val_score(epoch):
                 logger.debug("candidate {}".format(candidate_list[i]))
                 logger.debug("reference {}".format(reference_list[i]))
                 logger.debug(
-                    "id {} P {} R {} F1 {}".format(
-                        batch["id"][i].item(), P[i].item(), R[i].item(), F1[i].item()
+                    "id {} diff {} bleu {} P {} R {} F1 {}".format(
+                        batch["id"][i].item(),
+                        diff[i],
+                        bleu_score,
+                        P[i].item(),
+                        R[i].item(),
+                        F1[i].item(),
                     )
                 )
         if batch_idx % 50 == 0:
             logger.debug(" validating.. {}/{}".format(batch_idx, len(val_loader)))
 
+        dataset.update(batch["id"], unlearn_flag, learn_flag)
+        unlearn_cnt += unlearn_flag.count(1)
+    logging.debug(unlearn_cnt)
+
     df = pd.DataFrame(data)
     df.sort_values(by="id", ascending=True, inplace=True)
-    df.to_csv(f"./result/epoch{epoch}.csv", index=False)
+    df.to_csv(f"result/{exp}-{model_type}-update/epoch{epoch}.csv", index=False)
 
-    logger.debug(predict("This is a test for the model."))
+    scores.append(
+        {
+            "epoch": epoch,
+            "diff": df["diff"].mean(),
+            "bleu": df["bleu"].mean(),
+            "P": df["P"].mean(),
+            "R": df["R"].mean(),
+            "F1": df["F1"].mean(),
+        }
+    )
+
+    logger.info("diff {}".format(df["diff"].mean()))
+    logger.info("bleu {}".format(df["bleu"].mean()))
+    logger.info(
+        "bert_score [epoch {}] P {} R {} F1 {}".format(
+            epoch, df["P"].mean(), df["R"].mean(), df["F1"].mean()
+        )
+    )
+
+    logger.debug(predict("Who is Harry Potter?"))
+    return unlearn_cnt
 
 
 def validation_forget(epoch):
     model.eval()
     epoch_loss = 0
     for batch_idx, batch in enumerate(val_loader):
-        input_ids = batch["prefix_ids"].to(device)
-        attention_mask = batch["prefix_mask"].to(device)
-        target_ids = batch["suffix_ids"]
+        input_ids = batch["unlearn_prefix_ids"].to(device)
+        attention_mask = batch["unlearn_prefix_mask"].to(device)
+        target_ids = batch["unlearn_suffix_ids"]
         target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
         target_ids = target_ids.to(device)
 
@@ -209,7 +290,7 @@ def validation_ma(epoch):
     epoch_acc = 0
 
     for batch_idx, batch in enumerate(val_loader):
-        input_ids = batch["prefix_ids"].to(device)
+        input_ids = batch["unlearn_prefix_ids"].to(device)
 
         labels, preds = [], []
         for i in range(1, target_length):
@@ -261,7 +342,7 @@ def validation_el(epoch):
     el_score = {n: [] for n in el_n}
 
     for batch_idx, batch in enumerate(val_loader):
-        input_ids = batch["prefix_ids"].to(device)
+        input_ids = batch["unlearn_prefix_ids"].to(device)
 
         cur_batch_size = input_ids.shape[0]
         numerator = {n: [0] * cur_batch_size for n in el_n}
@@ -329,87 +410,84 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:7" if torch.cuda.is_available() else "cpu")
-model.to(device)
+model, optimizer, _, _ = deepspeed.initialize(
+    args, model, model_parameters=model.parameters()
+)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))
+device = model.device
 
-# scheduler = StepLR(optimizer, step_size=3, gamma=0.5)
+unlearn_loader, val_loader, dataset, candidate = get_loader(
+    unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer, model
+)
 
-unlearn_loader, val_loader = get_loader(unlearn_data_path, gpt2tokenizer, tokenizer)
-learn_loader, _ = get_loader(learn_data_path, gpt2tokenizer, tokenizer)
-
-
+epoch = 0
 val(0)
-for epoch in range(num_epoch):
+while True:
     torch.cuda.empty_cache()
     model.train()
-    epoch_loss = 0
 
     logger.info("Epoch {}: training".format(epoch + 1))
 
+    remove_list = []
     for batch_idx, batch in enumerate(unlearn_loader):
         optimizer.zero_grad()
-        input_ids = batch["prefix_ids"].to(device)
-        attention_mask = batch["prefix_mask"].to(device)
-        target_ids = batch["suffix_ids"]
+
+        input_ids = batch["unlearn_prefix_ids"][batch["unlearn_flag"] != 0].to(device)
+        attention_mask = batch["unlearn_prefix_mask"][batch["unlearn_flag"] != 0].to(
+            device
+        )
+        target_ids = batch["unlearn_suffix_ids"][batch["unlearn_flag"] != 0]
         target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
         target_ids = target_ids.to(device)
 
         outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
-        current_loss = outputs[0]
+        unlearn_loss = outputs[0]
 
-        loss = -lambda_val * current_loss
-        epoch_loss += current_loss
+        input_ids = batch["learn_prefix_ids"][batch["learn_flag"] != 0].to(device)
+        attention_mask = batch["learn_prefix_mask"][batch["learn_flag"] != 0].to(device)
+        target_ids = batch["learn_suffix_ids"][batch["learn_flag"] != 0]
+        target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
+        target_ids = target_ids.to(device)
 
-        loss.backward()
-        optimizer.step()
+        outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
+        learn_loss = outputs[0]
+
+        prob_p = batch["learn_prob"][batch["learn_flag"] != 0].to(device)
+        prob_q = torch.nn.functional.softmax(outputs.logits, -1)
+
+        kl_loss = -(prob_p * torch.log(prob_q + 1e-12)).sum(-1).mean()
+
+        loss = (
+            -unlearn_weight * unlearn_loss
+            + learn_weight * learn_loss
+            + kl_weight * kl_loss
+        )
+
+        model.backward(loss)
+        model.step()
 
         logger.info(
-            "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
+            "Train Epoch: {} [{}/{} ({:.0f}%)]\tunlearn_loss: {:.6f}\tlearn_loss: {:.6f}\tkl_loss: {:.6f}".format(
                 epoch + 1,
                 batch_idx,
-                len(unlearn_loader) + len(learn_loader),
-                100.0 * batch_idx / (len(unlearn_loader) + len(learn_loader)),
-                current_loss.item(),
+                len(unlearn_loader),
+                100.0 * batch_idx / len(unlearn_loader),
+                unlearn_loss.item(),
+                learn_loss.item(),
+                kl_loss.item(),
             )
         )
 
-    for batch_idx, batch in enumerate(learn_loader):
-        optimizer.zero_grad()
-        input_ids = batch["prefix_ids"].to(device)
-        attention_mask = batch["prefix_mask"].to(device)
-        target_ids = batch["suffix_ids"]
-        target_ids[target_ids[:, :] == tokenizer.pad_token_id] = -100
-        target_ids = target_ids.to(device)
-
-        outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
-        current_loss = outputs[0]
-
-        loss = lambda_val * current_loss
-        epoch_loss += current_loss
-
-        loss.backward()
-        optimizer.step()
-
-        logger.info(
-            "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
-                epoch + 1,
-                batch_idx + len(unlearn_loader),
-                len(unlearn_loader) + len(learn_loader),
-                100.0 * batch_idx / (len(learn_loader) + len(unlearn_loader)),
-                current_loss.item(),
-            )
-        )
-
-    logger.info(
-        "Epoch {} finished, mean loss: {:.6f}".format(
-            epoch + 1, epoch_loss.item() / (len(learn_loader) + len(unlearn_loader))
-        )
-    )
     if val(epoch + 1):
         break
-    # scheduler.step()
+    epoch += 1
+
 
 valid_df = pd.DataFrame(valid_result)
-valid_df.to_csv("./result/valid.csv", index=False)
+valid_df.to_csv(f"result/{exp}-{model_type}-update/valid.csv", index=False)
+bert_df = pd.DataFrame(scores)
+bert_df.to_csv(f"result/{exp}-{model_type}-update/score.csv", index=False)
+model.save_pretrained(
+    f"savemodel/{model_name_or_path}_{exp}_lr{learning_rate}_uw{unlearn_weight}_lw{learn_weight}_kl{kl_weight}_epoch{epoch}_updateboth",
+    safe_serialization=False,
+)

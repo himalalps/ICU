@@ -38,8 +38,8 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 
-tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
-model_name_or_path = "EleutherAI/gpt-neo-125m"
+tokenizer_name_or_path = f"EleutherAI/gpt-neo-{model_type}"
+model_name_or_path = f"EleutherAI/gpt-neo-{model_type}"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
 unlearn_data_path = f"./datasets/exp/{exp}/unlearn/_dataset.npy"
@@ -51,7 +51,7 @@ target_length = 200
 batch_size = 8
 num_workers = 8
 
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
 
 learning_rate = 2e-6
 
@@ -73,7 +73,7 @@ logging.info(
         unlearn_weight, learn_weight, kl_weight
     )
 )
-logger.info("update standard: ma 0.2994 or el 0.0499")
+logger.info("standard: ma 0.2994 and el 0.0499")
 
 
 def seed_everything(seed=42):
@@ -100,8 +100,10 @@ def get_loader(unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer, mod
         gpt2tokenizer,
         tokenizer,
         model,
+        device,
         prefix_length,
         suffix_length,
+        batch_size,
     )
     candidate = [i for i in range(len(dataset))]
 
@@ -133,7 +135,7 @@ def predict(message):
 def val(epoch):
     logger.info("Validating epoch {}".format(epoch))
     with torch.no_grad():
-        val_score(epoch)
+        unlearn_cnt = val_score(epoch)
         val_loss = validation_forget(epoch)
         acc = validation_ma(epoch)
         els = validation_el(epoch)
@@ -145,8 +147,11 @@ def val(epoch):
         for n, el in zip(el_n, els):
             valid_dict[f"el_{n}"] = el
         valid_result.append(valid_dict)
-        if acc < 0.2994 or any([el < 0.0499 for el in els]):
+        if acc < 0.2994 and any([el < 0.0499 for el in els]):
             logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
+            return True
+        if unlearn_cnt < 10:
+            logger.info("Epoch {} should stop, left {}".format(epoch, unlearn_cnt))
             return True
 
         torch.cuda.empty_cache()
@@ -254,6 +259,7 @@ def val_score(epoch):
     )
 
     logger.debug(predict("Who is Harry Potter?"))
+    return unlearn_cnt
 
 
 def validation_forget(epoch):
@@ -312,7 +318,7 @@ def validation_ma(epoch):
                 preds,
                 labels,
                 task="multiclass",
-                num_classes=tokenizer.pad_token_id,
+                num_classes=tokenizer.vocab_size,
                 ignore_index=-100,
             )
         epoch_acc += score.item()

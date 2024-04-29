@@ -8,12 +8,9 @@ import random
 import numpy as np
 import pandas as pd
 
-# import matplotlib.pyplot as plt
 
 import torch
 
-# import torch.nn as nn
-# import torch.nn.functional as F
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, RandomSampler
 from transformers import (
@@ -24,8 +21,10 @@ from transformers import (
     GPT2LMHeadModel,
 )
 from torchmetrics.functional import accuracy
+import nltk
+from nltk.translate.bleu_score import sentence_bleu
 
-exp = "exp2"
+exp = "exp4"
 model_type = "125m"
 if not os.path.exists(f"result/{exp}-{model_type}"):
     os.mkdir(f"result/{exp}-{model_type}")
@@ -52,7 +51,9 @@ target_length = 200
 batch_size = 8
 num_workers = 8
 
-learning_rate = 5e-5
+device = torch.device("cuda:7" if torch.cuda.is_available() else "cpu")
+
+learning_rate = 2e-6
 
 unlearn_weight = 1.0
 learn_weight = 0.5
@@ -61,7 +62,7 @@ kl_weight = 0.5
 el_n = [10]
 
 valid_result = []
-bert_score = []
+scores = []
 
 logging.info("learn and unlearn in one batch")
 logging.info("model name: {}".format(model_name_or_path))
@@ -72,6 +73,7 @@ logging.info(
         unlearn_weight, learn_weight, kl_weight
     )
 )
+logger.info("standard: ma 0.2994 or el 0.0499")
 
 
 def seed_everything(seed=42):
@@ -91,14 +93,17 @@ seed = 42
 seed_everything(seed)
 
 
-def get_loader(unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer):
+def get_loader(unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer, model):
     dataset = Custom_Dataset(
         unlearn_data_path,
         learn_data_path,
         gpt2tokenizer,
         tokenizer,
+        model,
+        device,
         prefix_length,
         suffix_length,
+        batch_size,
     )
     sampler = RandomSampler(dataset)
 
@@ -142,7 +147,7 @@ def val(epoch):
         for n, el in zip(el_n, els):
             valid_dict[f"el_{n}"] = el
         valid_result.append(valid_dict)
-        if acc < 0.2994 and any([el < 0.0499 for el in els]):
+        if acc < 0.2994 or any([el < 0.0499 for el in els]):
             logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
             return True
 
@@ -172,15 +177,25 @@ def val_score(epoch):
             pad_token_id=tokenizer.eos_token_id,
         )
         candidate_list = [candidate[50:] for candidate in candidate_list]
+        diff = [
+            len(set(candidate.tolist())) / len(candidate)
+            for candidate in candidate_list
+        ]
         candidate_list = tokenizer.batch_decode(candidate_list)
 
         P, R, F1 = batch_compute_bert_score(
             candidate_list, reference_list, bert_name_or_path, device
         )
         for i in range(len(P)):
+            reference = nltk.word_tokenize(reference_list[i].lower())
+            candidate = nltk.word_tokenize(candidate_list[i].lower())
+            bleu_score = sentence_bleu([reference], candidate)
+
             data.append(
                 {
                     "id": batch["id"][i].item(),
+                    "diff": diff[i],
+                    "bleu": bleu_score,
                     "P": P[i].item(),
                     "R": R[i].item(),
                     "F1": F1[i].item(),
@@ -192,8 +207,13 @@ def val_score(epoch):
                 logger.debug("candidate {}".format(candidate_list[i]))
                 logger.debug("reference {}".format(reference_list[i]))
                 logger.debug(
-                    "id {} P {} R {} F1 {}".format(
-                        batch["id"][i].item(), P[i].item(), R[i].item(), F1[i].item()
+                    "id {} diff {} bleu {} P {} R {} F1 {}".format(
+                        batch["id"][i].item(),
+                        diff[i],
+                        bleu_score,
+                        P[i].item(),
+                        R[i].item(),
+                        F1[i].item(),
                     )
                 )
         if batch_idx % 50 == 0:
@@ -203,16 +223,26 @@ def val_score(epoch):
     df.sort_values(by="id", ascending=True, inplace=True)
     df.to_csv(f"./result/{exp}-{model_type}/epoch{epoch}.csv", index=False)
 
-    bert_score.append(
+    scores.append(
         {
             "epoch": epoch,
+            "diff": df["diff"].mean(),
+            "bleu": df["bleu"].mean(),
             "P": df["P"].mean(),
             "R": df["R"].mean(),
             "F1": df["F1"].mean(),
         }
     )
 
-    logger.debug(predict("This is a test for the model."))
+    logger.info("diff {}".format(df["diff"].mean()))
+    logger.info("bleu {}".format(df["bleu"].mean()))
+    logger.info(
+        "bert_score [epoch {}] P {} R {} F1 {}".format(
+            epoch, df["P"].mean(), df["R"].mean(), df["F1"].mean()
+        )
+    )
+
+    logger.debug(predict("Who is Harry Potter?"))
 
 
 def validation_forget(epoch):
@@ -271,7 +301,7 @@ def validation_ma(epoch):
                 preds,
                 labels,
                 task="multiclass",
-                num_classes=tokenizer.pad_token_id,
+                num_classes=tokenizer.vocab_size,
                 ignore_index=-100,
             )
         epoch_acc += score.item()
@@ -343,18 +373,8 @@ if "gpt-neo" in model_name_or_path:
         attention_dropout=0,
         pad_token_id=tokenizer.eos_token_id,
     )
-    pretrained_model = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
-        resid_dropout=0,
-        embed_dropout=0,
-        attention_dropout=0,
-        pad_token_id=tokenizer.eos_token_id,
-    )
 elif "opt" in model_name_or_path:
     model: OPTForCausalLM = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path, dropout=0, attention_dropout=0, activation_dropout=0
-    )
-    pretrained_model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path, dropout=0, attention_dropout=0, activation_dropout=0
     )
 else:  # GPT2
@@ -365,26 +385,15 @@ else:  # GPT2
         attn_pdrop=0,
         pad_token_id=tokenizer.eos_token_id,
     )
-    pretrained_model = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
-        resid_pdrop=0,
-        embd_pdrop=0,
-        attn_pdrop=0,
-        pad_token_id=tokenizer.eos_token_id,
-    )
 model.resize_token_embeddings(len(tokenizer))
-pretrained_model.resize_token_embeddings(len(tokenizer))
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
 model.to(device)
-pretrained_model.to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.98))
 
-# scheduler = StepLR(optimizer, step_size=3, gamma=0.5)
-
 unlearn_loader, val_loader = get_loader(
-    unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer
+    unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer, model
 )
 
 epoch = 0
@@ -416,11 +425,7 @@ while True:
         outputs = model(input_ids, attention_mask=attention_mask, labels=target_ids)
         learn_loss = outputs[0]
 
-        with torch.no_grad():
-            pretrained_outputs = pretrained_model(
-                input_ids, attention_mask=attention_mask, labels=target_ids
-            )
-        prob_p = torch.nn.functional.softmax(pretrained_outputs.logits, -1)
+        prob_p = batch["learn_prob"].to(device)
         prob_q = torch.nn.functional.softmax(outputs.logits, -1)
 
         kl_loss = -(prob_p * torch.log(prob_q + 1e-12)).sum(-1).mean()
@@ -454,8 +459,8 @@ while True:
 
 valid_df = pd.DataFrame(valid_result)
 valid_df.to_csv(f"./result/{exp}-{model_type}/valid.csv", index=False)
-bert_df = pd.DataFrame(bert_score)
-bert_df.to_csv(f"./result/{exp}-{model_type}/bert.csv", index=False)
+bert_df = pd.DataFrame(scores)
+bert_df.to_csv(f"./result/{exp}-{model_type}/score.csv", index=False)
 model.save_pretrained(
     f"savemodel/{model_name_or_path}_{exp}_lr{learning_rate}_uw{unlearn_weight}_lw{learn_weight}_kl{kl_weight}_epoch{epoch}"
 )
