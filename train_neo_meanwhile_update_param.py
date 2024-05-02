@@ -5,14 +5,13 @@ from Datasets_mean import Custom_Dataset
 import os
 import logging
 import random
-import argparse
 import numpy as np
 import pandas as pd
 
 
 import torch
-import deepspeed
 
+from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from transformers import (
     GPT2Tokenizer,
@@ -25,8 +24,8 @@ from torchmetrics.functional import accuracy
 import nltk
 from nltk.translate.bleu_score import sentence_bleu
 
-exp = "exp3"
-model_type = "2.7B"
+exp = "exp0"
+model_type = "125m"
 if not os.path.exists(f"result/{exp}-{model_type}-update"):
     os.mkdir(f"result/{exp}-{model_type}-update")
 logging.basicConfig(
@@ -38,11 +37,6 @@ logging.basicConfig(
 
 logger = logging.getLogger()
 
-# deepspeed.ops.op_builder.CPUAdamBuilder().load()
-parser = argparse.ArgumentParser()
-parser.add_argument("--local_rank", type=int, default=0)
-parser = deepspeed.add_config_arguments(parser)
-args = parser.parse_args()
 
 tokenizer_name_or_path = f"EleutherAI/gpt-neo-{model_type}"
 model_name_or_path = f"EleutherAI/gpt-neo-{model_type}"
@@ -54,7 +48,7 @@ prefix_length = 200
 suffix_length = 200
 target_length = 200
 
-batch_size = 4
+batch_size = 8
 num_workers = 8
 
 device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
@@ -79,7 +73,7 @@ logging.info(
         unlearn_weight, learn_weight, kl_weight
     )
 )
-logger.info("standard: ma 0.2994 or el 0.0499")
+logger.info("standard: ma 0.2994 and el 0.0499")
 
 
 def seed_everything(seed=42):
@@ -153,7 +147,7 @@ def val(epoch):
         for n, el in zip(el_n, els):
             valid_dict[f"el_{n}"] = el
         valid_result.append(valid_dict)
-        if acc < 0.2994 or any([el < 0.0499 for el in els]):
+        if acc < 0.2994 and any([el < 0.0499 for el in els]):
             logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
             return True
         if unlearn_cnt < 10:
@@ -410,15 +404,14 @@ else:  # GPT2
     )
 model.resize_token_embeddings(len(tokenizer))
 
-model, optimizer, _, _ = deepspeed.initialize(
-    args, model, model_parameters=model.parameters()
-)
+model.to(device)
 
-device = model.device
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.98))
 
 unlearn_loader, val_loader, dataset, candidate = get_loader(
     unlearn_data_path, learn_data_path, gpt2tokenizer, tokenizer, model
 )
+len_data = len(dataset)
 
 epoch = 0
 val(0)
@@ -463,8 +456,8 @@ while True:
             + kl_weight * kl_loss
         )
 
-        model.backward(loss)
-        model.step()
+        loss.backward()
+        optimizer.step()
 
         logger.info(
             "Train Epoch: {} [{}/{} ({:.0f}%)]\tunlearn_loss: {:.6f}\tlearn_loss: {:.6f}\tkl_loss: {:.6f}".format(
@@ -488,6 +481,5 @@ valid_df.to_csv(f"result/{exp}-{model_type}-update/valid.csv", index=False)
 bert_df = pd.DataFrame(scores)
 bert_df.to_csv(f"result/{exp}-{model_type}-update/score.csv", index=False)
 model.save_pretrained(
-    f"savemodel/{model_name_or_path}_{exp}_lr{learning_rate}_uw{unlearn_weight}_lw{learn_weight}_kl{kl_weight}_epoch{epoch}_updateboth",
-    safe_serialization=False,
+    f"savemodel/{model_name_or_path}_{exp}_lr{learning_rate}_uw{unlearn_weight}_lw{learn_weight}_kl{kl_weight}_epoch{epoch}_updateboth"
 )

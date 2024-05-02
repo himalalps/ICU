@@ -32,7 +32,7 @@ from utils import (
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/exp0-2.7B-update/valid.log",
+    filename="result/exp3-2.7B-update/valid.log",
     filemode="w",
 )
 
@@ -40,14 +40,14 @@ logger = logging.getLogger()
 
 
 tokenizer_name_or_path = "EleutherAI/gpt-neo-2.7B"
-model_name_or_path = "savemodel/EleutherAI/gpt-neo-2.7B_exp0_lr2e-06_uw1.0_lw0.5_kl0.5_epoch21_updateboth"
+model_name_or_path = "savemodel/EleutherAI/gpt-neo-2.7B_exp3_lr2e-06_uw1.0_lw0.5_kl0.5_epoch27_updateboth"
 prefix_length = 512
 suffix_length = 512
 cache_dir = "./.cache/"
 batch_size = 32
 num_workers = 48
 
-device = torch.device("cuda:4" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 logger.info(model_name_or_path)
 
