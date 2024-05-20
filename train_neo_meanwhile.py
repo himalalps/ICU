@@ -51,13 +51,16 @@ target_length = 200
 batch_size = 8
 num_workers = 8
 
-device = torch.device("cuda:7" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-learning_rate = 2e-6
+learning_rate = 5e-6
 
 unlearn_weight = 1.0
 learn_weight = 0.5
-kl_weight = 0.5
+kl_weight = 1.0
+
+acc_threshold = 0.5994
+el_threshold = 0.0499
 
 el_n = [10]
 
@@ -73,7 +76,7 @@ logging.info(
         unlearn_weight, learn_weight, kl_weight
     )
 )
-logger.info("standard: ma 0.2994 or el 0.0499")
+logger.info(f"standard: ma {acc_threshold} and el {el_threshold}")
 
 
 def seed_everything(seed=42):
@@ -147,7 +150,7 @@ def val(epoch):
         for n, el in zip(el_n, els):
             valid_dict[f"el_{n}"] = el
         valid_result.append(valid_dict)
-        if acc < 0.2994 or any([el < 0.0499 for el in els]):
+        if acc < acc_threshold and any([el < el_threshold for el in els]):
             logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
             return True
 
@@ -156,6 +159,18 @@ def val(epoch):
 
 
 def val_score(epoch):
+    def entropy(tokens):
+        d = {}
+        p = 0
+        for token in tokens:
+            try:
+                d[token] += 1
+            except:
+                d[token] = 1
+        for token in d:
+            p -= d[token] / len(tokens) * np.log2(d[token] / len(tokens))
+        return p
+
     data = []
     model.eval()
     for batch_idx, batch in enumerate(val_loader):
@@ -181,6 +196,7 @@ def val_score(epoch):
             len(set(candidate.tolist())) / len(candidate)
             for candidate in candidate_list
         ]
+        ens = [entropy(candidate.tolist()) for candidate in candidate_list]
         candidate_list = tokenizer.batch_decode(candidate_list)
 
         P, R, F1 = batch_compute_bert_score(
@@ -195,6 +211,7 @@ def val_score(epoch):
                 {
                     "id": batch["id"][i].item(),
                     "diff": diff[i],
+                    "entropy": ens[i],
                     "bleu": bleu_score,
                     "P": P[i].item(),
                     "R": R[i].item(),
@@ -207,9 +224,10 @@ def val_score(epoch):
                 logger.debug("candidate {}".format(candidate_list[i]))
                 logger.debug("reference {}".format(reference_list[i]))
                 logger.debug(
-                    "id {} diff {} bleu {} P {} R {} F1 {}".format(
+                    "id {} diff {} entropy {} bleu {} P {} R {} F1 {}".format(
                         batch["id"][i].item(),
                         diff[i],
+                        ens[i],
                         bleu_score,
                         P[i].item(),
                         R[i].item(),
@@ -227,6 +245,7 @@ def val_score(epoch):
         {
             "epoch": epoch,
             "diff": df["diff"].mean(),
+            "entropy": df["entropy"].mean(),
             "bleu": df["bleu"].mean(),
             "P": df["P"].mean(),
             "R": df["R"].mean(),
@@ -234,15 +253,16 @@ def val_score(epoch):
         }
     )
 
+    logger.debug(predict("Who is Harry Potter?"))
+
     logger.info("diff {}".format(df["diff"].mean()))
+    logger.info("entropy {}".format(df["entropy"].mean()))
     logger.info("bleu {}".format(df["bleu"].mean()))
     logger.info(
         "bert_score [epoch {}] P {} R {} F1 {}".format(
             epoch, df["P"].mean(), df["R"].mean(), df["F1"].mean()
         )
     )
-
-    logger.debug(predict("Who is Harry Potter?"))
 
 
 def validation_forget(epoch):

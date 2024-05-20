@@ -23,18 +23,20 @@ import nltk
 from nltk.translate.bleu_score import sentence_bleu
 
 
+dir_path = "result/baseline/125m-4"
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/eval.log",
+    filename=f"{dir_path}/eval-.log",
     filemode="w",
 )
 
 logger = logging.getLogger()
 
 
-tokenizer_name_or_path = "EleutherAI/gpt-neo-2.7B"
-model_name_or_path = "savemodel/savegpt-neo-2_7b-4"
+tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
+model_name_or_path = "savemodel/savegpt-neo-125m_4"
 bert_name_or_path = "bert-base-uncased"
 gpt2_name_or_path = "gpt2"
 data_path = "./datasets/exp/exp4/unlearn/_dataset.npy"
@@ -45,7 +47,7 @@ target_length = 200
 batch_size = 8
 num_workers = 8
 
-device = torch.device("cuda:4" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:9" if torch.cuda.is_available() else "cpu")
 
 el_n = [10]
 
@@ -107,26 +109,38 @@ def val(epoch):
     logger.info("Validating epoch {}".format(epoch))
     with torch.no_grad():
         val_score(epoch)
-        val_loss = validation_forget(epoch)
-        acc = validation_ma(epoch)
-        els = validation_el(epoch)
-        valid_dict = {
-            "epoch": epoch,
-            "val_loss": val_loss,
-            "acc": acc,
-        }
-        for n, el in zip(el_n, els):
-            valid_dict[f"el_{n}"] = el
-        valid_result.append(valid_dict)
-    if acc < 0.2994 and any([el < 0.0499 for el in els]):
-        logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
-        return True
-    else:
-        torch.cuda.empty_cache()
-        return False
+    #     val_loss = validation_forget(epoch)
+    #     acc = validation_ma(epoch)
+    #     els = validation_el(epoch)
+    #     valid_dict = {
+    #         "epoch": epoch,
+    #         "val_loss": val_loss,
+    #         "acc": acc,
+    #     }
+    #     for n, el in zip(el_n, els):
+    #         valid_dict[f"el_{n}"] = el
+    #     valid_result.append(valid_dict)
+    # if acc < 0.2994 and any([el < 0.0499 for el in els]):
+    #     logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
+    #     return True
+    # else:
+    #     torch.cuda.empty_cache()
+    #     return False
 
 
 def val_score(epoch):
+    def entropy(tokens):
+        d = {}
+        p = 0
+        for token in tokens:
+            try:
+                d[token] += 1
+            except:
+                d[token] = 1
+        for token in d:
+            p -= d[token] / len(tokens) * np.log2(d[token] / len(tokens))
+        return p
+
     data = []
     model.eval()
     for batch_idx, batch in enumerate(val_loader):
@@ -152,6 +166,7 @@ def val_score(epoch):
             len(set(candidate.tolist())) / len(candidate)
             for candidate in candidate_list
         ]
+        ens = [entropy(candidate.tolist()) for candidate in candidate_list]
         candidate_list = tokenizer.batch_decode(candidate_list)
 
         P, R, F1 = batch_compute_bert_score(
@@ -165,6 +180,7 @@ def val_score(epoch):
                 {
                     "id": batch["id"][i].item(),
                     "diff": diff[i],
+                    "entropy": ens[i],
                     "bleu": bleu_score,
                     "P": P[i].item(),
                     "R": R[i].item(),
@@ -177,9 +193,10 @@ def val_score(epoch):
             logger.debug("candidate {}".format(candidate_list[i]))
             logger.debug("reference {}".format(reference_list[i]))
             logger.debug(
-                "id {} diff {} bleu {} P {} R {} F1 {}".format(
+                "id {} diff {} entropy {} bleu {} P {} R {} F1 {}".format(
                     batch["id"][i].item(),
                     diff[i],
+                    ens[i],
                     bleu_score,
                     P[i].item(),
                     R[i].item(),
@@ -189,17 +206,18 @@ def val_score(epoch):
 
     df = pd.DataFrame(data)
     df.sort_values(by="id", ascending=True, inplace=True)
-    df.to_csv(f"./result/unlearn.csv", index=False)
-
-    logger.info("diff {}".format(df["diff"].mean()))
-    logger.info("bleu {}".format(df["bleu"].mean()))
-    logger.info(
-        "bert_score P {} R {} F1 {}".format(
-            df["P"].mean(), df["R"].mean(), df["F1"].mean()
-        )
-    )
+    df.to_csv(f"{dir_path}/unlearn.csv", index=False)
 
     logger.debug(predict("Who is Harry Potter?"))
+
+    logger.info("diff {}".format(df["diff"].mean()))
+    logger.info("entropy {}".format(df["entropy"].mean()))
+    logger.info("bleu {}".format(df["bleu"].mean()))
+    logger.info(
+        "bert_score [epoch {}] P {} R {} F1 {}".format(
+            epoch, df["P"].mean(), df["R"].mean(), df["F1"].mean()
+        )
+    )
 
 
 def validation_forget(epoch):

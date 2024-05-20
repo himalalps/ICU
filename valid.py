@@ -29,18 +29,22 @@ from utils import (
     COMPLETION_DATASETS,
 )
 
+dir_path = "result/exp4-1.3B-update"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename="result/exp3-2.7B-update/valid.log",
+    filename=f"{dir_path}/valid.log",
     filemode="w",
 )
 
 logger = logging.getLogger()
 
 
-tokenizer_name_or_path = "EleutherAI/gpt-neo-2.7B"
-model_name_or_path = "savemodel/EleutherAI/gpt-neo-2.7B_exp3_lr2e-06_uw1.0_lw0.5_kl0.5_epoch27_updateboth"
+tokenizer_name_or_path = "EleutherAI/gpt-neo-1.3B"
+model_name_or_path = (
+    "savemodel/EleutherAI/gpt-neo-1.3B_exp4_lr5e-06_uw1.0_lw0.5_kl1.0_epoch25_updateboth"
+)
 prefix_length = 512
 suffix_length = 512
 cache_dir = "./.cache/"
@@ -53,12 +57,12 @@ logger.info(model_name_or_path)
 
 valid_data = [
     ["datasets/lambada.csv", "", "test"],
-    ["datasets/piqa", "", "validation"],
     ["datasets/hellaswag", "", "validation"],
+    ["datasets/winogrande", "winogrande_s", "validation"],
+    ["datasets/super_glue", "copa", "validation"],
     ["datasets/ai2_arc", "ARC-Easy", "validation"],
     ["datasets/ai2_arc", "ARC-Challenge", "validation"],
-    ["datasets/super_glue", "copa", "validation"],
-    ["datasets/winogrande", "winogrande_s", "validation"],
+    ["datasets/piqa", "", "validation"],
     ["datasets/math_qa", "", "validation"],
     ["datasets/pubmed_qa.csv", "", ""],
     ["datasets/validation_data/wizard_of_wikipedia.json", "", ""],
@@ -124,8 +128,13 @@ except AttributeError:
 
 
 def valid(valid_data):
+    result_dict = {}
     for data in valid_data:
-        valid_step(data[0], data[1], data[2])
+        result = valid_step(data[0], data[1], data[2])
+        result_dict[data[0] + data[1]] = result
+    result_list = [result_dict]
+    result_df = pd.DataFrame(result_list)
+    result_df.to_csv(f"{dir_path}/valid_result.csv")
 
 
 def valid_step(dataset_name, valid_subset_path, type_path):
@@ -138,13 +147,13 @@ def valid_step(dataset_name, valid_subset_path, type_path):
         task = dataset_name
     logging.info("{} {}".format(task, len(dataloader)))
     if any(name in dataset_name for name in COMPLETION_DATASETS):
-        lambada_evaluation(dataloader, prefix_length, task)
+        return lambada_evaluation(dataloader, prefix_length, task)
     elif any(name in dataset_name for name in CLASSIFICATION_DATASETS):
-        classification_verbalizer(dataloader, prefix_length, task)
+        return classification_verbalizer(dataloader, prefix_length, task)
     elif any(name in dataset_name for name in PPL_DATASETS):
-        validation_ppl(dataset, task)
+        return validation_ppl(dataset, task)
     elif any(name in dataset_name for name in DIALOG_DATASETS):
-        dialog_evaluation(dataloader, prefix_length, task)
+        return dialog_evaluation(dataloader, prefix_length, task)
     else:
         raise Exception("dataset_name not supported")
 
@@ -322,6 +331,7 @@ def classification_verbalizer(dataloader, padding_length, task):
     acc_avg = total_acc / len_data
 
     logging.info("{}/acc {}".format(task, acc_avg))
+    return acc_avg
 
 
 def lambada_evaluation(dataloader, padding_length, task):
@@ -412,6 +422,7 @@ def lambada_evaluation(dataloader, padding_length, task):
     logging.info("{}/loss {}".format(task, total_loss_avg))
     logging.info("{}/acc {}".format(task, total_acc_avg))
     logging.info("{}/f1 {}".format(task, total_f1_avg))
+    return total_acc_avg
 
 
 def dialog_evaluation(dataloader, padding_length, task):
@@ -537,6 +548,8 @@ def dialog_evaluation(dataloader, padding_length, task):
 
     logging.info("{}/f1 {}".format(task, total_f1_avg))
 
+    return total_f1_avg
+
 
 def validation_ppl(dataset, task):
     dataset_df = dataset.dataset
@@ -558,6 +571,7 @@ def validation_ppl(dataset, task):
             break
     ppl = torch.exp(torch.stack(log_prob).mean())
     logger.info("{}/loss {}".format(task, ppl))
+    return ppl.item()
 
 
 if __name__ == "__main__":

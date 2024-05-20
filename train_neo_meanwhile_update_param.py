@@ -24,14 +24,23 @@ from torchmetrics.functional import accuracy
 import nltk
 from nltk.translate.bleu_score import sentence_bleu
 
-exp = "exp0"
+exp = "exp4"
 model_type = "125m"
-if not os.path.exists(f"result/{exp}-{model_type}-update"):
-    os.mkdir(f"result/{exp}-{model_type}-update")
+learning_rate = 5e-6
+unlearn_weight = 1.0
+learn_weight = 2.0
+kl_weight = 2.0
+update_f1 = 0.3
+update_bleu = 0.01
+acc_threshold = 0.5994
+el_threshold = 0.0499
+
+if not os.path.exists(f"result/params/grid/lw{learn_weight}_kl{kl_weight}/{exp}"):
+    os.mkdir(f"result/params/grid/lw{learn_weight}_kl{kl_weight}/{exp}")
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    filename=f"result/{exp}-{model_type}-update/app.log",
+    filename=f"result/params/grid/lw{learn_weight}_kl{kl_weight}/{exp}/app.log",
     filemode="w",
 )
 
@@ -51,13 +60,7 @@ target_length = 200
 batch_size = 8
 num_workers = 8
 
-device = torch.device("cuda:5" if torch.cuda.is_available() else "cpu")
-
-learning_rate = 2e-6
-
-unlearn_weight = 1.0
-learn_weight = 0.5
-kl_weight = 0.5
+device = torch.device("cuda:7" if torch.cuda.is_available() else "cpu")
 
 el_n = [10]
 
@@ -73,7 +76,7 @@ logging.info(
         unlearn_weight, learn_weight, kl_weight
     )
 )
-logger.info("standard: ma 0.2994 and el 0.0499")
+logger.info(f"standard: ma {acc_threshold} and el {el_threshold}")
 
 
 def seed_everything(seed=42):
@@ -147,10 +150,10 @@ def val(epoch):
         for n, el in zip(el_n, els):
             valid_dict[f"el_{n}"] = el
         valid_result.append(valid_dict)
-        if acc < 0.2994 and any([el < 0.0499 for el in els]):
+        if acc < acc_threshold and any([el < el_threshold for el in els]):
             logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
             return True
-        if unlearn_cnt < 10:
+        if unlearn_cnt < 1:
             logger.info("Epoch {} should stop, left {}".format(epoch, unlearn_cnt))
             return True
 
@@ -159,6 +162,18 @@ def val(epoch):
 
 
 def val_score(epoch):
+    def entropy(tokens):
+        d = {}
+        p = 0
+        for token in tokens:
+            try:
+                d[token] += 1
+            except:
+                d[token] = 1
+        for token in d:
+            p -= d[token] / len(tokens) * np.log2(d[token] / len(tokens))
+        return p
+
     data = []
     model.eval()
     unlearn_cnt = 0
@@ -185,6 +200,7 @@ def val_score(epoch):
             len(set(candidate.tolist())) / len(candidate)
             for candidate in candidate_list
         ]
+        ens = [entropy(candidate.tolist()) for candidate in candidate_list]
         candidate_list = tokenizer.batch_decode(candidate_list)
 
         P, R, F1 = batch_compute_bert_score(
@@ -197,7 +213,7 @@ def val_score(epoch):
             reference = nltk.word_tokenize(reference_list[i].lower())
             candidate = nltk.word_tokenize(candidate_list[i].lower())
             bleu_score = sentence_bleu([reference], candidate)
-            if F1[i].item() < 0.4 or diff[i] < 0.25 or bleu_score < 0.05:
+            if F1[i].item() < update_f1 or bleu_score < update_bleu:
                 unlearn_flag.append(0)
                 learn_flag.append(0)
             else:
@@ -207,6 +223,7 @@ def val_score(epoch):
                 {
                     "id": batch["id"][i].item(),
                     "diff": diff[i],
+                    "entropy": ens[i],
                     "bleu": bleu_score,
                     "P": P[i].item(),
                     "R": R[i].item(),
@@ -219,9 +236,10 @@ def val_score(epoch):
                 logger.debug("candidate {}".format(candidate_list[i]))
                 logger.debug("reference {}".format(reference_list[i]))
                 logger.debug(
-                    "id {} diff {} bleu {} P {} R {} F1 {}".format(
+                    "id {} diff {} entropy {} bleu {} P {} R {} F1 {}".format(
                         batch["id"][i].item(),
                         diff[i],
+                        ens[i],
                         bleu_score,
                         P[i].item(),
                         R[i].item(),
@@ -237,12 +255,16 @@ def val_score(epoch):
 
     df = pd.DataFrame(data)
     df.sort_values(by="id", ascending=True, inplace=True)
-    df.to_csv(f"result/{exp}-{model_type}-update/epoch{epoch}.csv", index=False)
+    df.to_csv(
+        f"result/params/grid/lw{learn_weight}_kl{kl_weight}/{exp}/epoch{epoch}.csv",
+        index=False,
+    )
 
     scores.append(
         {
             "epoch": epoch,
             "diff": df["diff"].mean(),
+            "entropy": df["entropy"].mean(),
             "bleu": df["bleu"].mean(),
             "P": df["P"].mean(),
             "R": df["R"].mean(),
@@ -250,7 +272,10 @@ def val_score(epoch):
         }
     )
 
+    logger.debug(predict("Who is Harry Potter?"))
+
     logger.info("diff {}".format(df["diff"].mean()))
+    logger.info("entropy {}".format(df["entropy"].mean()))
     logger.info("bleu {}".format(df["bleu"].mean()))
     logger.info(
         "bert_score [epoch {}] P {} R {} F1 {}".format(
@@ -258,7 +283,6 @@ def val_score(epoch):
         )
     )
 
-    logger.debug(predict("Who is Harry Potter?"))
     return unlearn_cnt
 
 
@@ -477,9 +501,13 @@ while True:
 
 
 valid_df = pd.DataFrame(valid_result)
-valid_df.to_csv(f"result/{exp}-{model_type}-update/valid.csv", index=False)
+valid_df.to_csv(
+    f"result/params/grid/lw{learn_weight}_kl{kl_weight}/{exp}/valid.csv", index=False
+)
 bert_df = pd.DataFrame(scores)
-bert_df.to_csv(f"result/{exp}-{model_type}-update/score.csv", index=False)
+bert_df.to_csv(
+    f"result/params/grid/lw{learn_weight}_kl{kl_weight}/{exp}/score.csv", index=False
+)
 model.save_pretrained(
-    f"savemodel/{model_name_or_path}_{exp}_lr{learning_rate}_uw{unlearn_weight}_lw{learn_weight}_kl{kl_weight}_epoch{epoch}_updateboth"
+    f"savemodel/grid/{model_name_or_path}_{exp}_lw{learn_weight}_kl{kl_weight}_epoch{epoch}_updateboth"
 )
