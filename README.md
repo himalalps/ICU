@@ -7,3 +7,20 @@ The target data can be downloaded from [this link](https://github.com/ethz-spyla
 Our codebase is based on the following repo. Thanks for open-sourcing!
 
 [Knowledge Unlearning](https://github.com/joeljang/knowledge-unlearning)
+
+[llm_unlearn](https://github.com/kevinyaobytedance/llm_unlearn)
+
+# Datasets
+
+ai2_arc: https://allenai.org/data/arc
+
+hellaswag: https://huggingface.co/datasets/Rowan/hellaswag
+
+math_qa: https://huggingface.co/datasets/math_qa
+
+piqa: https://huggingface.co/datasets/ybisk/piqa
+
+super_glue: https://huggingface.co/datasets/super_glue
+
+winogrande: https://huggingface.co/datasets/allenai/winogrande
+

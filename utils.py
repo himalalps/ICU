@@ -1,5 +1,4 @@
 from bert_score import score
-import pandas as pd
 
 DIALOG_DATASETS = [
     "wizard_of_wikipedia",
