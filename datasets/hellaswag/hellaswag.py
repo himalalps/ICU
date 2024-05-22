@@ -19,7 +19,7 @@ _CITATION = """\
 _DESCRIPTION = """
 HellaSwag: Can a Machine Really Finish Your Sentence? is a new dataset for commonsense NLI. A paper was published at ACL2019.
 """
-_URL = "/data/haoyu/unlearn/unlearning/datasets/hellaswag/"
+_URL = "https://raw.githubusercontent.com/rowanz/hellaswag/master/data/"
 _URLS = {
     "train": _URL + "hellaswag_train.jsonl",
     "test": _URL + "hellaswag_test.jsonl",
@@ -68,7 +68,8 @@ class Hellaswag(datasets.GeneratorBasedBuilder):
         # TODO(hellaswag): Downloads the data and defines the splits
         # dl_manager is a datasets.download.DownloadManager that can be used to
         # download and extract URLs
-        dl_dir = _URLS
+        urls_to_download = _URLS
+        dl_dir = dl_manager.download_and_extract(urls_to_download)
         return [
             datasets.SplitGenerator(
                 name=datasets.Split.TRAIN,

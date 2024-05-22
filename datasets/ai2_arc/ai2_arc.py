@@ -1,6 +1,5 @@
 """TODO(arc): Add a description here."""
 
-
 import json
 import os
 
@@ -38,7 +37,9 @@ class Ai2ArcConfig(datasets.BuilderConfig):
         Args:
           **kwargs: keyword arguments forwarded to super.
         """
-        super(Ai2ArcConfig, self).__init__(version=datasets.Version("1.0.0", ""), **kwargs)
+        super(Ai2ArcConfig, self).__init__(
+            version=datasets.Version("1.0.0", ""), **kwargs
+        )
 
 
 class Ai2Arc(datasets.GeneratorBasedBuilder):
@@ -72,9 +73,12 @@ class Ai2Arc(datasets.GeneratorBasedBuilder):
                     "id": datasets.Value("string"),
                     "question": datasets.Value("string"),
                     "choices": datasets.features.Sequence(
-                        {"text": datasets.Value("string"), "label": datasets.Value("string")}
+                        {
+                            "text": datasets.Value("string"),
+                            "label": datasets.Value("string"),
+                        }
                     ),
-                    "answerKey": datasets.Value("string")
+                    "answerKey": datasets.Value("string"),
                     # These are the features of your dataset like images, labels ...
                 }
             ),
@@ -92,23 +96,35 @@ class Ai2Arc(datasets.GeneratorBasedBuilder):
         # TODO(ai2_arc): Downloads the data and defines the splits
         # dl_manager is a datasets.download.DownloadManager that can be used to
         # download and extract URLs
-        dl_dir = "/data/haoyu/unlearn/unlearning/datasets/ai2_arc"
+        dl_dir = "./datasets/ai2_arc"
         data_dir = os.path.join(dl_dir, "ARC-V1-Feb2018-2")
         return [
             datasets.SplitGenerator(
                 name=datasets.Split.TRAIN,
                 # These kwargs will be passed to _generate_examples
-                gen_kwargs={"filepath": os.path.join(data_dir, self.config.name, self.config.name + "-Train.jsonl")},
+                gen_kwargs={
+                    "filepath": os.path.join(
+                        data_dir, self.config.name, self.config.name + "-Train.jsonl"
+                    )
+                },
             ),
             datasets.SplitGenerator(
                 name=datasets.Split.TEST,
                 # These kwargs will be passed to _generate_examples
-                gen_kwargs={"filepath": os.path.join(data_dir, self.config.name, self.config.name + "-Test.jsonl")},
+                gen_kwargs={
+                    "filepath": os.path.join(
+                        data_dir, self.config.name, self.config.name + "-Test.jsonl"
+                    )
+                },
             ),
             datasets.SplitGenerator(
                 name=datasets.Split.VALIDATION,
                 # These kwargs will be passed to _generate_examples
-                gen_kwargs={"filepath": os.path.join(data_dir, self.config.name, self.config.name + "-Dev.jsonl")},
+                gen_kwargs={
+                    "filepath": os.path.join(
+                        data_dir, self.config.name, self.config.name + "-Dev.jsonl"
+                    )
+                },
             ),
         ]
 

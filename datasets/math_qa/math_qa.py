@@ -56,7 +56,7 @@ class MathQa(datasets.GeneratorBasedBuilder):
         # TODO(math_qa): Downloads the data and defines the splits
         # dl_manager is a datasets.download.DownloadManager that can be used to
         # download and extract URLs
-        dl_path = "/data/haoyu/unlearn/unlearning/datasets/math_qa/"
+        dl_path = dl_manager.download_and_extract(_URL)
         return [
             datasets.SplitGenerator(
                 name=datasets.Split.TRAIN,
