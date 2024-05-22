@@ -1,6 +1,6 @@
-# Iterative Contrastive Unlearning
+# Unlearn
 
-![](./figure/framework.png)
+
 
 ## Specification of dependencies
 
