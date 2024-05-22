@@ -4,6 +4,7 @@ from Datasets_neo import Custom_Dataset
 
 import os
 import logging
+import argparse
 import random
 import numpy as np
 import pandas as pd
@@ -13,6 +14,7 @@ import torch
 from torch.utils.data import DataLoader, RandomSampler
 from transformers import (
     GPT2Tokenizer,
+    AutoTokenizer,
     AutoModelForCausalLM,
     GPTNeoForCausalLM,
     OPTForCausalLM,
@@ -22,38 +24,7 @@ from torchmetrics.functional import accuracy
 import nltk
 from nltk.translate.bleu_score import sentence_bleu
 
-
-dir_path = "result/baseline/125m-4"
-
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    filename=f"{dir_path}/eval-.log",
-    filemode="w",
-)
-
-logger = logging.getLogger()
-
-
-tokenizer_name_or_path = "EleutherAI/gpt-neo-125m"
-model_name_or_path = "savemodel/savegpt-neo-125m_4"
-bert_name_or_path = "bert-base-uncased"
-gpt2_name_or_path = "gpt2"
-data_path = "./datasets/exp/exp4/unlearn/_dataset.npy"
-prefix_length = 200
-suffix_length = 200
-target_length = 200
-
-batch_size = 8
-num_workers = 8
-
-device = torch.device("cuda:9" if torch.cuda.is_available() else "cpu")
-
-el_n = [10]
-
-valid_result = []
-
-logger.info(model_name_or_path)
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def seed_everything(seed=42):
@@ -69,30 +40,22 @@ def seed_everything(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
-seed = 42
-seed_everything(seed)
-
-
-def get_loader(data_path, gpt2tokenizer, tokenizer):
+def get_loader(data_path, gpt2tokenizer, tokenizer, args):
     dataset = Custom_Dataset(
         data_path,
         gpt2tokenizer,
         tokenizer,
-        prefix_length,
-        suffix_length,
+        args.prefix_length,
+        args.suffix_length,
     )
 
-    sampler = RandomSampler(dataset)
-    train_dataloader = DataLoader(
-        dataset, sampler=sampler, batch_size=batch_size, num_workers=num_workers
-    )
     valid_dataloader = DataLoader(
-        dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
+        dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False
     )
-    return train_dataloader, valid_dataloader
+    return valid_dataloader
 
 
-def predict(message):
+def predict(message, tokenizer, model, device):
     model_inputs = tokenizer.encode(message, return_tensors="pt").to(device)
     model_outputs = model.generate(
         model_inputs,
@@ -105,30 +68,26 @@ def predict(message):
     return model_output_text
 
 
-def val(epoch):
+def val(epoch, model, val_loader, gpt2tokenizer, tokenizer, el_n, device, args):
     logger.info("Validating epoch {}".format(epoch))
     with torch.no_grad():
-        val_score(epoch)
-    #     val_loss = validation_forget(epoch)
-    #     acc = validation_ma(epoch)
-    #     els = validation_el(epoch)
-    #     valid_dict = {
-    #         "epoch": epoch,
-    #         "val_loss": val_loss,
-    #         "acc": acc,
-    #     }
-    #     for n, el in zip(el_n, els):
-    #         valid_dict[f"el_{n}"] = el
-    #     valid_result.append(valid_dict)
-    # if acc < 0.2994 and any([el < 0.0499 for el in els]):
-    #     logger.info("Epoch {} should stop, acc {}, el {}".format(epoch, acc, els))
-    #     return True
-    # else:
-    #     torch.cuda.empty_cache()
-    #     return False
+        val_score(epoch, model, val_loader, gpt2tokenizer, tokenizer, device, args)
+        val_loss = validation_forget(epoch, model, val_loader, tokenizer, device)
+        acc = validation_ma(epoch, model, val_loader, tokenizer, device, args)
+        els = validation_el(epoch, model, val_loader, tokenizer, device, el_n, args)
+        valid_dict = {
+            "epoch": epoch,
+            "val_loss": val_loss,
+            "acc": acc,
+        }
+        for n, el in zip(el_n, els):
+            valid_dict[f"el_{n}"] = el
+    valid_result = [valid_dict]
+    valid_df = pd.DataFrame(valid_result)
+    valid_df.to_csv(f"{args.dir}/eval.csv")
 
 
-def val_score(epoch):
+def val_score(epoch, model, val_loader, gpt2tokenizer, tokenizer, device, args):
     def entropy(tokens):
         d = {}
         p = 0
@@ -170,7 +129,7 @@ def val_score(epoch):
         candidate_list = tokenizer.batch_decode(candidate_list)
 
         P, R, F1 = batch_compute_bert_score(
-            candidate_list, reference_list, bert_name_or_path, device
+            candidate_list, reference_list, args.bert_name, device
         )
         for i in range(len(P)):
             reference = nltk.word_tokenize(reference_list[i].lower())
@@ -206,9 +165,9 @@ def val_score(epoch):
 
     df = pd.DataFrame(data)
     df.sort_values(by="id", ascending=True, inplace=True)
-    df.to_csv(f"{dir_path}/unlearn.csv", index=False)
+    df.to_csv(f"{args.dir}/unlearn.csv", index=False)
 
-    logger.debug(predict("Who is Harry Potter?"))
+    logger.debug(predict("Who is Harry Potter?", tokenizer, model, device))
 
     logger.info("diff {}".format(df["diff"].mean()))
     logger.info("entropy {}".format(df["entropy"].mean()))
@@ -220,7 +179,7 @@ def val_score(epoch):
     )
 
 
-def validation_forget(epoch):
+def validation_forget(epoch, model, val_loader, tokenizer, device):
     model.eval()
     epoch_loss = 0
     for batch_idx, batch in enumerate(val_loader):
@@ -237,7 +196,7 @@ def validation_forget(epoch):
     return epoch_loss / len(val_loader)
 
 
-def validation_ma(epoch):
+def validation_ma(epoch, model, val_loader, tokenizer, device, args):
     model.eval()
     epoch_acc = 0
 
@@ -245,7 +204,7 @@ def validation_ma(epoch):
         input_ids = batch["prefix_ids"].to(device)
 
         labels, preds = [], []
-        for i in range(1, target_length):
+        for i in range(1, args.target_length):
             label = input_ids[..., i]
             prompt = input_ids[..., :i]
 
@@ -289,7 +248,7 @@ def validation_ma(epoch):
     return epoch_acc / len(val_loader)
 
 
-def validation_el(epoch):
+def validation_el(epoch, model, val_loader, tokenizer, device, el_n, args):  # -> list:
     def ngram_of_1D_tensor(X, n):
         grams = [tuple(X[i : i + n].tolist()) for i in range(X.shape[0] - n + 1)]
         return grams
@@ -302,11 +261,13 @@ def validation_el(epoch):
 
         cur_batch_size = input_ids.shape[0]
         numerator = {n: [0] * cur_batch_size for n in el_n}
-        for i in reversed(range(150, target_length)):
-            label = input_ids[..., i:target_length]
+        for i in reversed(range(150, args.target_length)):
+            label = input_ids[..., i : args.target_length]
             prompt = input_ids[..., :i]
             pred = model.generate(
-                prompt, max_length=target_length, pad_token_id=tokenizer.eos_token_id
+                prompt,
+                max_length=args.target_length,
+                pad_token_id=tokenizer.eos_token_id,
             )[..., i:]
 
             for example_idx in range(cur_batch_size):
@@ -324,7 +285,9 @@ def validation_el(epoch):
                         pass
 
         for n in el_n:
-            el_score[n] += [s / (target_length - 150 - (n - 1)) for s in numerator[n]]
+            el_score[n] += [
+                s / (args.target_length - 150 - (n - 1)) for s in numerator[n]
+            ]
 
     els = []
     for n in el_n:
@@ -337,40 +300,127 @@ def validation_el(epoch):
     return els
 
 
-gpt2tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained(gpt2_name_or_path)
-gpt2tokenizer.padding_side = "left"
-tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_name_or_path)
-tokenizer.padding_side = "left"
-if "gpt" in tokenizer_name_or_path:
-    tokenizer.pad_token = tokenizer.eos_token
-# Different models have different kwargs
-if "gpt-neo" in model_name_or_path:
-    model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
-        resid_dropout=0,
-        embed_dropout=0,
-        attention_dropout=0,
-        pad_token_id=tokenizer.eos_token_id,
+if __name__ == "__main__":
+    seed = 42
+    seed_everything(seed)
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--exp", type=str, default="exp0", help="path to train data")
+
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="EleutherAI/gpt-neo-125m",
+        help="model name or path",
     )
-elif "opt" in model_name_or_path:
-    model: OPTForCausalLM = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path, dropout=0, attention_dropout=0, activation_dropout=0
+
+    parser.add_argument(
+        "--tokenizer_name",
+        type=str,
+        default="EleutherAI/gpt-neo-125m",
+        help="tokenizer name or path",
     )
-else:  # GPT2
-    model: GPT2LMHeadModel = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
-        resid_pdrop=0,
-        embd_pdrop=0,
-        attn_pdrop=0,
-        pad_token_id=tokenizer.eos_token_id,
+
+    parser.add_argument(
+        "--gpt2_name",
+        type=str,
+        default="openai-community/gpt2",
+        help="gpt2 name or path",
     )
-model.resize_token_embeddings(len(tokenizer))
 
+    parser.add_argument(
+        "--bert_name",
+        type=str,
+        default="google-bert/bert-base-uncased",
+        help="bert model name or path",
+    )
 
-model.to(device)
+    parser.add_argument(
+        "--prefix_length", type=int, default=200, help="prefix length of input"
+    )
 
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-6, betas=(0.9, 0.98))
+    parser.add_argument(
+        "--suffix_length", type=int, default=200, help="suffix length of input"
+    )
 
-train_loader, val_loader = get_loader(data_path, gpt2tokenizer, tokenizer)
+    parser.add_argument(
+        "--target_length", type=int, default=200, help="length of target sequence"
+    )
 
-val(0)
+    parser.add_argument("--device", type=str, default="cuda:0", help="pytorch device")
+
+    parser.add_argument("--batch_size", type=int, default=8, help="train batch size")
+
+    parser.add_argument("--num_workers", type=int, default=8, help="train num workers")
+
+    parser.add_argument(
+        "--dir", type=str, default="result", help="directory to store the results"
+    )
+
+    args = parser.parse_args()
+
+    if not os.path.exists(args.dir):
+        os.mkdir(args.dir)
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        filename=f"{args.dir}/eval.log",
+        filemode="w",
+    )
+
+    logger = logging.getLogger()
+
+    for arg in vars(args):
+        logger.info(f"{arg}: {getattr(args, arg)}")
+
+    data_path = f"./datasets/exp/{args.exp}/unlearn/_dataset.npy"
+
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+
+    el_n = [10]
+
+    gpt2tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained(args.gpt2_name)
+    gpt2tokenizer.padding_side = "left"
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
+    tokenizer.padding_side = "left"
+    if "gpt" in args.tokenizer_name:
+        tokenizer.pad_token = tokenizer.eos_token
+    # Different models have different kwargs
+    if "gpt-neo" in args.model_name:
+        model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            resid_dropout=0,
+            embed_dropout=0,
+            attention_dropout=0,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    elif "opt" in args.model_name:
+        model: OPTForCausalLM = AutoModelForCausalLM.from_pretrained(
+            args.model_name, dropout=0, attention_dropout=0, activation_dropout=0
+        )
+    else:  # GPT2
+        model: GPT2LMHeadModel = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            resid_pdrop=0,
+            embd_pdrop=0,
+            attn_pdrop=0,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    model.resize_token_embeddings(len(tokenizer))
+
+    model.to(device)
+
+    val_loader = get_loader(data_path, gpt2tokenizer, tokenizer, args)
+
+    val(
+        0,
+        model,
+        val_loader,
+        gpt2tokenizer,
+        tokenizer,
+        el_n,
+        device,
+        args,
+    )

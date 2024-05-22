@@ -7,5 +7,5 @@ deepspeed --include localhost:0,1,2,3,4,5 \
 --bert_name "google-bert/bert-base-uncased" \
 --prefix_length 200 --suffix_length 200 --target_length 200 \
 --batch_size 4 --num_workers 8 --lr 5e-6 \
---uw 1.0 --lw 0.5 --kl 1.0 --f1 0.3 --bleu 0.01 --acc 0.7994 \
---el 0.6499 --dir "result/test1"
+--uw 1.0 --lw 0.5 --kl 1.0 --f1 0.3 --bleu 0.01 --acc 0.5994 \
+--el 0.0499 --dir "result/test1"

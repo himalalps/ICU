@@ -3,4 +3,4 @@ python ./valid.py \
 --tokenizer_name "EleutherAI/gpt-neo-125m" \
 --prefix_length 512 --suffix_length 512 --device "cuda:3" \
 --batch_size 32 --num_workers 48 \
---dir "./result/test" --cache "./cache"
+--dir "./result/test" --cache "./.cache"
