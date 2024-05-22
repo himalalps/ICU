@@ -2,6 +2,8 @@
 
 ![](./figure/framework.png)
 
+The code has been verified on Python 3.8.
+
 # Comments
 
 Our codebase is based on the following repo. Thanks for open-sourcing!
