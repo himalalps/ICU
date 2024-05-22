@@ -4,6 +4,7 @@ import re
 import os
 import string
 import logging
+import argparse
 import random
 import numpy as np
 import pandas as pd
@@ -14,7 +15,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import (
-    GPT2Tokenizer,
+    AutoTokenizer,
     AutoModelForCausalLM,
     GPTNeoForCausalLM,
     OPTForCausalLM,
@@ -28,50 +29,6 @@ from utils import (
     PPL_DATASETS,
     COMPLETION_DATASETS,
 )
-
-dir_path = "result/exp4-1.3B-update"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    filename=f"{dir_path}/valid.log",
-    filemode="w",
-)
-
-logger = logging.getLogger()
-
-
-tokenizer_name_or_path = "EleutherAI/gpt-neo-1.3B"
-model_name_or_path = (
-    "savemodel/EleutherAI/gpt-neo-1.3B_exp4_lr5e-06_uw1.0_lw0.5_kl1.0_epoch25_updateboth"
-)
-prefix_length = 512
-suffix_length = 512
-cache_dir = "./.cache/"
-batch_size = 32
-num_workers = 48
-
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-
-logger.info(model_name_or_path)
-
-valid_data = [
-    ["datasets/lambada.csv", "", "test"],
-    ["datasets/hellaswag", "", "validation"],
-    ["datasets/winogrande", "winogrande_s", "validation"],
-    ["datasets/super_glue", "copa", "validation"],
-    ["datasets/ai2_arc", "ARC-Easy", "validation"],
-    ["datasets/ai2_arc", "ARC-Challenge", "validation"],
-    ["datasets/piqa", "", "validation"],
-    ["datasets/math_qa", "", "validation"],
-    ["datasets/pubmed_qa.csv", "", ""],
-    ["datasets/validation_data/wizard_of_wikipedia.json", "", ""],
-    ["datasets/validation_data/empathetic_dialogues.json", "", ""],
-    ["datasets/validation_data/blended_skill_talk.json", "", ""],
-    ["datasets/validation_data/wizard_of_internet.json", "", ""],
-    ["datasets/validation_data/pile.csv", "", ""],
-    ["datasets/validation_data/wikitext.csv", "", ""],
-]
 
 
 def seed_everything(seed=42):
@@ -87,59 +44,19 @@ def seed_everything(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
-seed = 42
-seed_everything(seed)
-
-
-tokenizer: GPT2Tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_name_or_path)
-if "gpt" in tokenizer_name_or_path:
-    tokenizer.pad_token = tokenizer.eos_token
-logging.debug(tokenizer.padding_side)
-# Different models have different kwargs
-if "gpt-neo" in model_name_or_path:
-    model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
-        resid_dropout=0,
-        embed_dropout=0,
-        attention_dropout=0,
-        pad_token_id=tokenizer.eos_token_id,
-    )
-elif "opt" in model_name_or_path:
-    model: OPTForCausalLM = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path, dropout=0, attention_dropout=0, activation_dropout=0
-    )
-else:  # GPT2
-    model: GPT2LMHeadModel = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
-        resid_pdrop=0,
-        embd_pdrop=0,
-        attn_pdrop=0,
-        pad_token_id=tokenizer.eos_token_id,
-    )
-model.resize_token_embeddings(len(tokenizer))
-
-
-model.to(device)
-
-try:
-    max_length = model.config.n_ctx
-except AttributeError:
-    max_length = model.config.max_position_embeddings
-
-
-def valid(valid_data):
+def valid(valid_data, model, tokenizer, args):
     result_dict = {}
     for data in valid_data:
-        result = valid_step(data[0], data[1], data[2])
+        result = valid_step(data[0], data[1], data[2], model, tokenizer, args)
         result_dict[data[0] + data[1]] = result
     result_list = [result_dict]
     result_df = pd.DataFrame(result_list)
-    result_df.to_csv(f"{dir_path}/valid_result.csv")
+    result_df.to_csv(f"{args.dir}/valid_result.csv")
 
 
-def valid_step(dataset_name, valid_subset_path, type_path):
+def valid_step(dataset_name, valid_subset_path, type_path, model, tokenizer, args):
     dataset, dataloader = get_loader(
-        dataset_name, valid_subset_path, type_path, tokenizer
+        dataset_name, valid_subset_path, type_path, tokenizer, args
     )
     if valid_subset_path:
         task = f"{dataset_name}_{valid_subset_path}"
@@ -147,28 +64,34 @@ def valid_step(dataset_name, valid_subset_path, type_path):
         task = dataset_name
     logging.info("{} {}".format(task, len(dataloader)))
     if any(name in dataset_name for name in COMPLETION_DATASETS):
-        return lambada_evaluation(dataloader, prefix_length, task)
+        return lambada_evaluation(dataloader, args.prefix_length, task, model)
     elif any(name in dataset_name for name in CLASSIFICATION_DATASETS):
-        return classification_verbalizer(dataloader, prefix_length, task)
+        return classification_verbalizer(
+            dataloader, args.prefix_length, task, model, args
+        )
     elif any(name in dataset_name for name in PPL_DATASETS):
-        return validation_ppl(dataset, task)
+        return validation_ppl(dataset, task, model, tokenizer, args)
     elif any(name in dataset_name for name in DIALOG_DATASETS):
-        return dialog_evaluation(dataloader, prefix_length, task)
+        return dialog_evaluation(dataloader, args.prefix_length, task, model, tokenizer)
     else:
         raise Exception("dataset_name not supported")
 
 
-def get_loader(dataset_name, valid_subset_path, type_path, tokenizer):
+def get_loader(dataset_name, valid_subset_path, type_path, tokenizer, args):
     valid_dataset = Valid_Dataset(
         dataset_name,
         valid_subset_path,
         type_path,
         tokenizer,
-        prefix_length,
-        suffix_length,
+        args.prefix_length,
+        args.suffix_length,
+        args.cache
     )
     valid_dataloader = DataLoader(
-        valid_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
+        valid_dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=False,
     )
     return valid_dataset, valid_dataloader
 
@@ -227,7 +150,7 @@ def _f1_score(prediction, ground_truth):
     return f1
 
 
-def classification_verbalizer(dataloader, padding_length, task):
+def classification_verbalizer(dataloader, padding_length, task, model, args):
     total_acc = 0
     len_data = 0
 
@@ -252,7 +175,7 @@ def classification_verbalizer(dataloader, padding_length, task):
         for c_idx in range(len(choices)):
             choice_ids = tokenizer.batch_encode_plus(
                 list(choices[c_idx]),
-                max_length=prefix_length,
+                max_length=args.prefix_length,
                 add_special_tokens=False,
                 padding="max_length",
                 truncation=True,
@@ -334,7 +257,7 @@ def classification_verbalizer(dataloader, padding_length, task):
     return acc_avg
 
 
-def lambada_evaluation(dataloader, padding_length, task):
+def lambada_evaluation(dataloader, padding_length, task, model):
     total_loss = 0
     total_acc = 0
     total_f1 = 0
@@ -425,7 +348,7 @@ def lambada_evaluation(dataloader, padding_length, task):
     return total_acc_avg
 
 
-def dialog_evaluation(dataloader, padding_length, task):
+def dialog_evaluation(dataloader, padding_length, task, model, tokenizer):
     total_loss = 0
     total_f1 = 0
     len_data = 0
@@ -551,15 +474,15 @@ def dialog_evaluation(dataloader, padding_length, task):
     return total_f1_avg
 
 
-def validation_ppl(dataset, task):
+def validation_ppl(dataset, task, model, tokenizer, args):
     dataset_df = dataset.dataset
     encoding = tokenizer("\n\n".join(dataset_df["text"]), return_tensors="pt")
 
     seq_len = encoding.input_ids.size(1)
 
     log_prob = []
-    for begin_loc in range(0, seq_len, suffix_length):
-        end_loc = min(begin_loc + suffix_length, seq_len)
+    for begin_loc in range(0, seq_len, args.suffix_length):
+        end_loc = min(begin_loc + args.suffix_length, seq_len)
 
         input_ids = encoding.input_ids[:, begin_loc:end_loc].to(device)
         target_ids = input_ids.clone()
@@ -575,6 +498,117 @@ def validation_ppl(dataset, task):
 
 
 if __name__ == "__main__":
+    seed = 42
+    seed_everything(seed)
+
+    valid_data = [
+        ["datasets/lambada.csv", "", "test"],
+        ["datasets/hellaswag", "", "validation"],
+        ["datasets/winogrande", "winogrande_s", "validation"],
+        ["datasets/super_glue", "copa", "validation"],
+        ["datasets/ai2_arc", "ARC-Easy", "validation"],
+        ["datasets/ai2_arc", "ARC-Challenge", "validation"],
+        ["datasets/piqa", "", "validation"],
+        ["datasets/math_qa", "", "validation"],
+        ["datasets/pubmed_qa.csv", "", ""],
+        ["datasets/validation_data/wizard_of_wikipedia.json", "", ""],
+        ["datasets/validation_data/empathetic_dialogues.json", "", ""],
+        ["datasets/validation_data/blended_skill_talk.json", "", ""],
+        ["datasets/validation_data/wizard_of_internet.json", "", ""],
+        ["datasets/validation_data/pile.csv", "", ""],
+        ["datasets/validation_data/wikitext.csv", "", ""],
+    ]
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="EleutherAI/gpt-neo-125m",
+        help="model name or path",
+    )
+
+    parser.add_argument(
+        "--tokenizer_name",
+        type=str,
+        default="EleutherAI/gpt-neo-125m",
+        help="tokenizer name or path",
+    )
+
+    parser.add_argument(
+        "--prefix_length", type=int, default=512, help="prefix length of input"
+    )
+
+    parser.add_argument(
+        "--suffix_length", type=int, default=512, help="suffix length of input"
+    )
+
+    parser.add_argument("--device", type=str, default="cuda:0", help="pytorch device")
+
+    parser.add_argument("--batch_size", type=int, default=32, help="train batch size")
+
+    parser.add_argument("--num_workers", type=int, default=48, help="train num workers")
+
+    parser.add_argument(
+        "--dir", type=str, default="result", help="directory to store the results"
+    )
+
+    parser.add_argument(
+        "--cache", type=str, default="./cache", help="dataset cache directory"
+    )
+
+    args = parser.parse_args()
+
+    if not os.path.exists(args.dir):
+        os.mkdir(args.dir)
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        filename=f"{args.dir}/valid.log",
+        filemode="w",
+    )
+
+    logger = logging.getLogger()
+
+    for arg in vars(args):
+        logger.info(f"{arg}: {getattr(args, arg)}")
+
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
+    if "gpt" in args.tokenizer_name:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    # Different models have different kwargs
+    if "gpt-neo" in args.model_name:
+        model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            resid_dropout=0,
+            embed_dropout=0,
+            attention_dropout=0,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    elif "opt" in args.model_name:
+        model: OPTForCausalLM = AutoModelForCausalLM.from_pretrained(
+            args.model_name, dropout=0, attention_dropout=0, activation_dropout=0
+        )
+    else:  # GPT2
+        model: GPT2LMHeadModel = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            resid_pdrop=0,
+            embd_pdrop=0,
+            attn_pdrop=0,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    model.resize_token_embeddings(len(tokenizer))
+
+    model.to(device)
+
+    try:
+        max_length = model.config.n_ctx
+    except AttributeError:
+        max_length = model.config.max_position_embeddings
+
     model.eval()
     with torch.no_grad():
-        valid(valid_data)
+        valid(valid_data, model, tokenizer, args)

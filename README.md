@@ -1,6 +1,6 @@
 # Unlearn
 
-The target data can be downloaded from [this link](https://github.com/ethz-spylab/lm-extraction-benchmark-data/tree/main/datasets).
+
 
 # Comments
 
@@ -11,6 +11,10 @@ Our codebase is based on the following repo. Thanks for open-sourcing!
 [llm_unlearn](https://github.com/kevinyaobytedance/llm_unlearn)
 
 # Datasets
+
+The target data can be downloaded from [this link](https://github.com/ethz-spylab/lm-extraction-benchmark-data/tree/main/datasets).
+
+Below are the validation datasets used and can be downloaded from open source.
 
 ai2_arc: https://allenai.org/data/arc
 
