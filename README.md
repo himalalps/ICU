@@ -9,7 +9,7 @@ The code has been verified on Python 3.8.19.
 ```bash
 $ conda create -n icu python=3.8
 $ conda activate icu
-$ # Install the correct torch version depending on CUDA version from https://pytorch.org/
+# Install the correct torch version depending on CUDA version from https://pytorch.org/
 $ conda install pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch 
 $ pip install -r requirements.txt
 ```
@@ -48,6 +48,22 @@ deepspeed --include localhost:0,1,2 \
 --el 0.0499 --dir "result/test"
 ```
 
+With six gpus (0,1,2,3,4,5), the command below starts training of GPT-NEO-1.3B.
+```
+# train-2_7b.sh
+$ deepspeed --include localhost:0,1,2,3,4,5 \
+./train_neo_meanwhile_update_deepspeed.py \
+--deepspeed_config ./config/deepspeed6.json \
+--exp "exp0" --model_name "EleutherAI/gpt-neo-2.7B" \
+--tokenizer_name "EleutherAI/gpt-neo-2.7B" \
+--gpt2_name "openai-community/gpt2" \
+--bert_name "google-bert/bert-base-uncased" \
+--prefix_length 200 --suffix_length 200 --target_length 200 \
+--batch_size 4 --num_workers 8 --lr 5e-6 \
+--uw 1.0 --lw 0.5 --kl 1.0 --f1 0.3 --bleu 0.01 --acc 0.5994 \
+--el 0.0499 --dir "result/test1"
+```
+
 ## Evaluation Code
 
 ### Downstream Tasks
@@ -80,7 +96,15 @@ python ./eval.py --exp "all" \
 
 ### GPT
 
+The related code is in `evaluation` directory. `test.ipynb` is more convenient than `api.py`.
+
+1. Fill in your GPT-4 api key in the code.
+2. Use `convert.py` to convert the results of previous files in Evaluating. (Rearranging the files according to the code may be necessary.)
+3. Run the code.
+
 ## Data Preparation
+
+
 
 ### Datasets
 
