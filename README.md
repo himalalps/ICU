@@ -49,7 +49,7 @@ deepspeed --include localhost:0,1,2 \
 ```
 
 With six gpus (0,1,2,3,4,5), the command below starts training of GPT-NEO-1.3B.
-```bash
+```
 # train-2_7b.sh
 $ deepspeed --include localhost:0,1,2,3,4,5 \
 ./train_neo_meanwhile_update_deepspeed.py \
