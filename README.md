@@ -1,6 +1,6 @@
-# Unlearn
+# Iterative Contrastive Unlearning
 
-
+![](./figure/framework.png)
 
 ## Specification of dependencies
 
@@ -100,11 +100,28 @@ The related code is in `evaluation` directory. `test.ipynb` is more convenient t
 
 1. Fill in your GPT-4 api key in the code.
 2. Use `convert.py` to convert the results of previous files in Evaluating. (Rearranging the files according to the code may be necessary.)
-3. Run the code.
+3. Run the code inside `evaluation`.
+
+The files should be rearranged to a tree following below structure:
+```
+evaluation
+│   125mneo.csv     # the results of gpt-neo-125m on all
+│   125mopt.csv     # the results of opt-125m on all
+│   api.py
+│   convert.py
+│   lm_extraction_128_0.csv
+│   prompt.py
+│   test.ipynb
+│
+├───125m-0
+│       and.csv         # the results of KUMPR on 0
+│       neo.csv         # generated
+|       opt.csv         # generated
+│       ours.csv        # our results
+│       results.json    # generated
+```
 
 ## Data Preparation
-
-
 
 ### Datasets
 
@@ -125,6 +142,10 @@ Below are the validation datasets used and can be downloaded from open source.
 - [winogrande](https://huggingface.co/datasets/allenai/winogrande)
 
 ### Preparing Target Data
+
+First, place the `train_dataset.npy` under directory `datasets`. Then run `data_prep.py`. This will complete the converting and the KNN sampling process.
+
+The data used in 5 runs in our paper is under directory `datasets/exp/exp{0/1/2/3/4}` respectively.
 
 ## Comments
 
