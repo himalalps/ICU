@@ -22,9 +22,9 @@ class Custom_Dataset(Dataset):
         super(Custom_Dataset, self).__init__(**kwargs)
         self.unlearn_data_path: str = unlearn_data_path
         self.learn_data_path: str = learn_data_path
-        self.gpt2tokenizer = gpt2tokenizer
-        self.tokenizer = tokenizer
-        self.model = model
+        self.gpt2tokenizer: GPT2Tokenizer = gpt2tokenizer
+        self.tokenizer: GPT2Tokenizer = tokenizer
+        self.model: GPTNeoForCausalLM = model
         self.device = device
         self.prefix_length = prefix_length
         self.suffix_length = suffix_length
@@ -77,7 +77,10 @@ class Custom_Dataset(Dataset):
     def _getpretrain(self):
         assert len(self.learn_prefix_ids) == len(self.learn_suffix_ids)
         assert len(self.learn_prefix_ids) == len(self.learn_prefix_mask)
+        assert len(self.unlearn_prefix_ids) == len(self.unlearn_suffix_ids)
+        assert len(self.unlearn_prefix_ids) == len(self.unlearn_prefix_mask)
         probs = []
+        probs_unlearn = []
         self.model.eval()
         for i in range(len(self.learn_prefix_ids) // self.batch_size):
             input_ids = torch.cat(
@@ -108,7 +111,36 @@ class Custom_Dataset(Dataset):
             prob_p = torch.nn.functional.softmax(outputs.logits, -1)
             probs.append(prob_p)
 
+            input_ids = torch.cat(
+                [
+                    self.unlearn_prefix_ids[id]
+                    for id in range(i * self.batch_size, (i + 1) * self.batch_size)
+                ]
+            ).to(self.device)
+            attention_mask = torch.cat(
+                [
+                    self.unlearn_prefix_mask[id]
+                    for id in range(i * self.batch_size, (i + 1) * self.batch_size)
+                ]
+            ).to(self.device)
+            target_ids = torch.cat(
+                [
+                    self.unlearn_suffix_ids[id]
+                    for id in range(i * self.batch_size, (i + 1) * self.batch_size)
+                ]
+            )
+            target_ids[target_ids[:, :] == self.tokenizer.pad_token_id] = -100
+            target_ids = target_ids.to(self.device)
+            with torch.no_grad():
+                outputs = self.model(
+                    input_ids, attention_mask=attention_mask, labels=target_ids
+                )
+
+            prob_p = torch.nn.functional.softmax(outputs.logits, -1)
+            probs_unlearn.append(prob_p)
+
         self.probs = torch.cat(probs).to("cpu")
+        self.probs_unlearn = torch.cat(probs_unlearn).to("cpu")
 
     def _convert(self, row, length, flag):
         message = self.gpt2tokenizer.decode(row)
@@ -134,6 +166,7 @@ class Custom_Dataset(Dataset):
             "unlearn_prefix_ids": self.unlearn_prefix_ids[idx].squeeze(),
             "unlearn_prefix_mask": self.unlearn_prefix_mask[idx].squeeze(),
             "unlearn_suffix_ids": self.unlearn_suffix_ids[idx].squeeze(),
+            "unlearn_prob": self.probs_unlearn[idx],
             "learn_flag": self.learn_flag[idx],
             "learn_gpt2_prefix": self.learn_gpt2_prefix[idx],
             "learn_gpt2_suffix": self.learn_gpt2_suffix[idx],

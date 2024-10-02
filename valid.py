@@ -562,7 +562,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.dir):
         os.mkdir(args.dir)
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
         filename=f"{args.dir}/valid.log",
         filemode="w",
@@ -576,8 +576,8 @@ if __name__ == "__main__":
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
-    if "gpt" in args.tokenizer_name:
-        tokenizer.pad_token = tokenizer.eos_token
+
+    tokenizer.pad_token = tokenizer.eos_token
     
     # Different models have different kwargs
     if "gpt-neo" in args.model_name:
@@ -593,11 +593,8 @@ if __name__ == "__main__":
             args.model_name, dropout=0, attention_dropout=0, activation_dropout=0
         )
     else:  # GPT2
-        model: GPT2LMHeadModel = AutoModelForCausalLM.from_pretrained(
+        model = AutoModelForCausalLM.from_pretrained(
             args.model_name,
-            resid_pdrop=0,
-            embd_pdrop=0,
-            attn_pdrop=0,
             pad_token_id=tokenizer.eos_token_id,
         )
     model.resize_token_embeddings(len(tokenizer))

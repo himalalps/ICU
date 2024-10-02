@@ -384,8 +384,8 @@ def main(args):
     gpt2tokenizer.padding_side = "left"
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
     tokenizer.padding_side = "left"
-    if "gpt" in args.tokenizer_name:
-        tokenizer.pad_token = tokenizer.eos_token
+
+    tokenizer.pad_token = tokenizer.eos_token
     # Different models have different kwargs
     if "gpt-neo" in args.model_name:
         model: GPTNeoForCausalLM = AutoModelForCausalLM.from_pretrained(
@@ -400,11 +400,8 @@ def main(args):
             args.model_name, dropout=0, attention_dropout=0, activation_dropout=0
         )
     else:  # GPT2
-        model: GPT2LMHeadModel = AutoModelForCausalLM.from_pretrained(
+        model = AutoModelForCausalLM.from_pretrained(
             args.model_name,
-            resid_pdrop=0,
-            embd_pdrop=0,
-            attn_pdrop=0,
             pad_token_id=tokenizer.eos_token_id,
         )
 
