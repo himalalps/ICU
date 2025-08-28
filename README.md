@@ -1,5 +1,9 @@
 # Iterative Contrastive Unlearning
 
+[![Paper](https://img.shields.io/badge/paper-9f0000?style=for-the-badge&logo=arxiv&logocolor=white)](https://arxiv.org/abs/2407.20271)
+
+> Code repo for **Learn while Unlearn: An Iterative Unlearning Framework for Generative Language Models** *(ICDM 2025)*.
+
 ![](./figure/framework.png)
 
 ## Specification of dependencies
@@ -207,3 +211,14 @@ Our codebase is based on the following repo. Thanks for open-sourcing!
 [Knowledge Unlearning](https://github.com/joeljang/knowledge-unlearning)
 
 [llm_unlearn](https://github.com/kevinyaobytedance/llm_unlearn)
+
+## Citation
+
+```
+@article{tang2024learn,
+  title={Learn while unlearn: An iterative unlearning framework for generative language models},
+  author={Tang, Haoyu and Liu, Ye and Zhao, Xi and Liu, Xukai and Zhang, Yanghai and Zhang, Kai and Zhou, Xiaofang and Chen, Enhong},
+  journal={arXiv preprint arXiv:2407.20271},
+  year={2024}
+}
+```
